@@ -367,14 +367,22 @@ def check_prompt_instrumentation():
         env["OCF_ROOT"] = root
         payload = {"hook_event_name": "UserPromptSubmit", "session_id": "abcdef1234567890",
                    "prompt": "a human sentence"}
-        subprocess.run([sys.executable, ENTRY, "hook"], input=json.dumps(payload).encode("utf-8"),
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+        proc = subprocess.run([sys.executable, ENTRY, "hook"], input=json.dumps(payload).encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
         path = os.path.join(root, ".orchestrator", "prompt-log")
         assert os.path.exists(path), "a UserPromptSubmit wrote no prompt-log, so nothing can be settled"
         with open(path, "r", encoding="utf-8") as handle:
             line = handle.read().strip()
         assert "abcdef12" in line, "prompt-log did not record the session: %r" % line
         assert "a human sentence" in line, "prompt-log did not record the prompt: %r" % line
+        # The injected line must report what the agent could not derive, not instruct it to ask for the
+        # keys one at a time: the second shape is what this state used to mean, and it is what made the
+        # agent interrogate the human for seven answers instead of deriving them.
+        emitted = proc.stdout.decode("utf-8", "replace")
+        assert "not derivable from context" in emitted, (
+            "the asking line no longer reports what could not be derived; emitted: %r" % emitted[:300])
+        assert "Ask one at a time" not in emitted, (
+            "the asking line still orders the agent to interrogate the human; emitted: %r" % emitted[:300])
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -542,11 +550,51 @@ def test_transition_table():
     check_transition_table()
 
 
+GATED_PAIRS = (("asking", "planning"), ("planning", "executing"))
+
+
+def check_gated_transitions():
+    """Every transition the machine gates must really run gates, and must name states that exist.
+
+    The expectation is written out above rather than taken from the table, because a check that iterates
+    the table to build its own expectation stays green when a key is renamed or emptied - and that is
+    exactly the omission it exists to catch. `transition_gate_names` falls back to an empty tuple for an
+    unknown pair, so a renamed key would advance the machine with no gate running and nothing printed.
+
+    Blind spot, stated rather than implied: it does not notice a gated pair deleted outright, only a pair
+    renamed or emptied. It guards the keys, not the set of transitions.
+    """
+    ocf = load_ocf_module()
+    problems = []
+    for pair in GATED_PAIRS:
+        for name in pair:
+            if name not in ocf.STATES:
+                problems.append("%s names %r, which is not a state in STATES" % (pair, name))
+        names = ocf.transition_gate_names(*pair)
+        if not names:
+            problems.append("the transition %s -> %s runs no gate at all, so it would advance in "
+                            "silence" % pair)
+        for name in names:
+            if name not in ocf.GATES:
+                problems.append("the transition %s -> %s names a gate the engine does not have: %s"
+                                % (pair[0], pair[1], name))
+    for pair in ocf.TRANSITIONS["gates"]:
+        for name in pair:
+            if name not in ocf.STATES:
+                problems.append("a key of the transition table names %r, which is not a state" % name)
+    assert not problems, "; ".join(problems)
+
+
+def test_gated_transitions():
+    check_gated_transitions()
+
+
 CHECKS = (
     ("repo-ascii", test_repo_is_ascii),
     ("plan-template", test_plan_template),
     ("policy-vocabulary", test_policy_vocabulary),
     ("transition-table", test_transition_table),
+    ("gated-transitions", test_gated_transitions),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),

@@ -53,8 +53,9 @@ wait rather than forcing it.
 
 State gates:
 
-- context: goal, tools, references, deliverables, code_style, each at least 4 characters, asked item by
-  item with one missing item per question. Never fill them in yourself.
+- context: goal, tools, references, deliverables, code_style, each at least 4 characters. The agent
+  derives them from context and the human's own statement; grilling fills only what is left, one
+  question per turn. Never fill them in yourself.
 - docs-decision: docs_decision is create or skip.
 - grill-valid: grill_rounds at least 1, consensus at least 10 characters, grill_used with-docs or me.
 - plan-schema: plan.md carries all 8 sections from section 6.
@@ -129,11 +130,15 @@ A screenshot the human attaches is readable. The screenshot tool is not.
 
 ## 5. Intake
 
-One question at a time, one missing item per question, never guessing and never filling in for the
-human. Facts, with what each gate needs: goal, tools, references, deliverables and code_style at least
-4 characters each, docs_decision create or skip, stack_env at least 4 characters and asking for the
-existing environment, grill_used with-docs or me, consensus at least 10 characters. grill_rounds is
-counted by the hook and must not be written.
+The human is never handed a form. They are offered three sections to say in their own words: the goal in
+one sentence, the requirements (the reference design and the process steps), and the deliverables. The
+agent derives the eight plan sections from that plus the context it can observe. The facts below are what
+the agent records for the human to correct, not what it demands one item at a time; only what cannot be
+derived is grilled, one question per turn. Never guess a value and never decide for the human. Facts, with
+what each gate needs: goal, tools, references, deliverables and code_style at least 4 characters each,
+docs_decision create or skip, stack_env at least 4 characters and declared by the human rather than probed
+by the agent, grill_used with-docs or me, consensus at least 10 characters. grill_rounds is counted by the
+hook and must not be written.
 
 A perfunctory or automatic reply is not an answer. Re-ask, do not advance, never decide for the human.
 You make that judgement yourself; the system does no keyword matching.

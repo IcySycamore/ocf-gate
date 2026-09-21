@@ -21,8 +21,9 @@ enters executing. Never hand-edit state, facts, journal.log, human-code.txt or a
 Run status first, then do only what the current state allows.
 
 - ready: wait for the human. Their first message moves the hook to asking.
-- asking: one question at a time, record the facts in section 5. Then advance planning or let the
-  human run confirm.
+- asking: offer the human three sections (goal / requirements / deliverables), derive the eight plan
+  sections from that plus context, record the facts, and grill only the gaps, one question per turn.
+  Then advance planning or let the human run confirm.
 - planning: write plan.md with the 8 sections, dispatch plan-auditor for an independent P0 review,
   and only then set p0_count from the audit. A P0 means revise and re-audit.
 - executing: follow the approved plan exactly, carrying no extra changes. Then advance reporting.

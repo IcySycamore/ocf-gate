@@ -1148,10 +1148,11 @@ def handle_prompt(root, policy, payload):
     state = read_state(root, policy)
     lines.append("OCF state: %s (%s)." % (state, ", ".join(STATES)))
     if state == "asking":
-        missing = gate_missing(root, policy)
-        if missing:
-            lines.append("Missing intake items: %s. Ask one at a time, never fill them in."
-                         % ", ".join(missing))
+        outstanding = context_missing(root, policy)
+        if outstanding:
+            lines.append("Intake items not derivable from context: %s. Take each one from the human's "
+                         "own statement if it already says so, and grill only what remains, one "
+                         "question per turn. Never guess a value." % ", ".join(outstanding))
     return "\n".join(lines)
 
 
@@ -1166,8 +1167,8 @@ def handle_session_start(root, policy):
 # Gates
 # ---------------------------------------------------------------------------
 
-# The intake key list and its threshold live here, once. gate_context, gate_missing and the status
-# line all report from this, instead of each holding its own copy of the list to drift away from.
+# The intake key list and its threshold live here, once. gate_context and the status line both report
+# from this, instead of each holding its own copy of the list to drift away from.
 CONTEXT_KEYS = ("goal", "tools", "references", "deliverables", "code_style")
 CONTEXT_MIN_LEN = 4
 
@@ -1291,11 +1292,6 @@ GATES = {
     "human-code-clear": gate_human_code_clear,
     "stack-env": gate_stack_env,
 }
-
-
-def gate_missing(root, policy):
-    """The list form of gate_context. One line, so it cannot drift from context_missing."""
-    return context_missing(root, policy)
 
 
 def run_gates(root, policy, names):
