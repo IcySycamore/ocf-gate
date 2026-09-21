@@ -405,7 +405,7 @@ command_repeats_at_least = 3
 #
 # Field by field, same five as a hard rule:
 #   enabled  是否启用    switched off means the sentence is not written out at all
-#   kind     the rule is soft, so `reload` writes it instead of the gate reading it
+#   kind     规则类型    the rule is soft, so `reload` writes it instead of the gate reading it
 #   if       命中情景    occasion = the moment it applies to; one of session-start, ask, plan, act,
 #                        answer
 #   unless   绕过情景    the exception, in the human's own words: a soft rule is judged by the model,
@@ -441,7 +441,7 @@ why     = "审计交给子代理，且 P0 为零时只交报告、不推进状�
 result  = """
 计划写完，派 plan-auditor 子代理做独立审计，
 不要自己审自己的计划。
-P0 为零时，把行动报告和风险设计报告交给人类，
+P0 数量为零时，把行动报告和风险设计报告交给人类，
 把
 
     python .github/ocf/ocf.py approve "<reason>"
