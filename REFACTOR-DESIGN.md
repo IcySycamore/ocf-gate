@@ -381,3 +381,24 @@ best aligned with the context..."`。机制是：提问会建立 `pendingQuestio
 并把 `read_file` 的期望从 `default` 改为 `read-only`，使"读永不被拦"成为被断言的不变量。
 
 同时交付 [`POLICY-GUIDE.md`](POLICY-GUIDE.md)：人类面向的策略配置说明与指南（字段、谓词、22 条规则、配方、验证方式）。
+
+---
+
+## 15. 未解决：PostToolUse 注入形状未经真实载荷验证（2026-09-21，计划项 T8）
+
+**结论：不动代码，记录缺口。** 计划里 T8 只在"能拿到真实载荷"时才写适配层；本次没拿到，所以走它自己写的兜底分支。
+
+**事实**：`ocf.py` 按编辑器 bundle 里读到的形状分两路注入 —— `SessionStart` 的 `additionalContext` 是**字符串**（消费方调 `.substring()`），`PostToolUse` 的 `additionalContext` 是**数组**（消费方逐项迭代）。代码就按此实现：`emit_context` 发字符串，`emit_posttool_context` 发数组。
+
+**未验证**：这套形状是**从 bundle 里读出来的，不是从一次真实调用里拿到的**。写这一节时（2026-09-21）在 VS Code 调试日志与 `.orchestrator/` 下都搜不到任何 `tool_response` / `hook_event_name` 留档，所以没有可对照的真实载荷。
+
+**为什么要紧**：如果形状判断反了，`PostToolUse` 的两条"无进展检测"提示会**静默消失**（数组喂给字符串消费方，或反之，都不报错）——而"静默失效"正是本仓库最忌讳的一类失败。
+
+**怎么结案**（任一条即可）：
+
+1. 临时把 hook 的 stdin 原文落盘一次，触发任意一次工具调用后取回，再按它写断言；
+2. 重载窗口后，用真实会话触发一次 `PostToolUse`，从注入结果反推形状。
+
+两条都需要**重载窗口**（hooks 无热加载），所以只能由人类发起。
+
+**现状要看清**：`tests/run.py` 的 4 条 PostToolUse 用例是**直接构造 payload** 喂 `ocf.py hook`，验证的是"给定这种 payload，我们的输出对不对"，**不是**"编辑器真的会发这种 payload"。两者的差别就是这一节记录的东西。
