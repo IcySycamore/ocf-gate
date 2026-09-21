@@ -344,7 +344,9 @@ SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
 ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
 COMPUTED_FLAGS = ("control_plane", "invokes_entry")
 RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
-             "exempt_when_listed")
+             "exempt_when_listed",
+             # The newer shape. Both are accepted while the policy is converted rule by rule.
+             "enabled", "kind", "result", "if", "verify")
 
 
 def policy_findings(policy):
@@ -406,6 +408,17 @@ def policy_findings(policy):
                 elif name not in CONDITION_KEYS:
                     problems.append("%s: %s holds the unknown condition key %r; the engine reads %s"
                                     % (where, key, name, ", ".join(CONDITION_KEYS)))
+        result = rule.get("result")
+        if result is not None and result not in ACTION_VALUES:
+            problems.append("%s: unknown result %r; the engine knows %s"
+                            % (where, result, ", ".join(ACTION_VALUES)))
+        kind = rule.get("kind")
+        if kind is not None and str(kind).strip().lower() not in ("hard", "soft"):
+            problems.append("%s: unknown kind %r; the engine knows hard, soft" % (where, kind))
+        for name in sorted(rule.get("if") or {}):
+            if name in FLAT_CONDITIONS or name in FLAT_VALUE_CONDITIONS or name in FLAT_FACT_KEYS:
+                continue
+            problems.append("%s: rule.if holds the unknown condition %r" % (where, name))
     return [("policy", text) for text in problems]
 
 
@@ -826,8 +839,11 @@ def condition_holds(context, condition):
     """Evaluate a context-scoped condition. Value-scoped ones are handled by filter_condition."""
     if "fact" in condition:
         name = condition["fact"]
-        if condition.get("is_set"):
-            return bool(context.facts.get(name, "").strip())
+        if "is_set" in condition:
+            present = bool(context.facts.get(name, "").strip())
+            return present == as_bool(condition["is_set"])
+        if "is_not" in condition:
+            return context.facts.get(name, "") != str(condition["is_not"])
         return context.facts.get(name, "") == str(condition.get("is", ""))
     if "content_matches" in condition:
         return re.search(condition["content_matches"], context.raw_json + "\n" + context.content,
@@ -926,6 +942,7 @@ FLAT_CONDITIONS = {
         re.search(value, context.raw_json + "\n" + context.content, re.I | re.S) is not None,
     "environment_declared": lambda context, value:
         bool(context.facts.get("stack_env", "").strip()) == as_bool(value),
+    "computed": lambda context, value: bool(context.computed.get(value)),
 }
 
 # Judged against each candidate value the action carries, so one qualifying path cannot decide the
@@ -936,7 +953,7 @@ FLAT_VALUE_CONDITIONS = {
         as_bool(value) == listed_in(context.root, PROTECTED_LIST_REL, candidate),
 }
 
-FLAT_FACT_KEYS = ("fact", "is", "is_set")
+FLAT_FACT_KEYS = ("fact", "is", "is_not", "is_set")
 
 
 def evaluate_rule_v2(context, rule):

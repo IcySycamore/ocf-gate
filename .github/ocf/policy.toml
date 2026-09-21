@@ -154,54 +154,65 @@ mcp_playwright_browser_evaluate = ["function"]
 
 # plan.md is the artifact the gate itself demands, so it must be writable before approval.
 [[rule]]
-id = "plan-md-exempt"
-on = "edit"
-surface = "path"
-match = '^\.orchestrator/plan\.md$'
-action = "allow"
-why = "The gate itself asks for this artifact."
+id      = "plan-md-exempt"
+enabled = true
+result  = "allow"
+why     = "The gate itself asks for this artifact."
+
+[rule.if]
+class        = "edit"
+path_matches = '^\.orchestrator/plan\.md$'
 
 [[rule]]
-id = "failure-budget"
-on = "exec"
-surface = "command"
-match = '.*'
-action = "deny"
-only_if = { fact = "must_consult", is = "yes" }
-why = "Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies."
+id      = "failure-budget"
+enabled = true
+result  = "deny"
+why     = "Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies."
+
+[rule.if]
+class = "exec"
+fact  = "must_consult"
+is    = "yes"
 
 [[rule]]
-id = "visual-tool"
-on = "visual"
-surface = "tool"
-match = '.*'
-action = "deny"
-why = "The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not."
+id      = "visual-tool"
+enabled = true
+result  = "deny"
+why     = "The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not."
+
+[rule.if]
+class = "visual"
 
 [[rule]]
-id = "visual-command"
-on = "exec"
-surface = "command"
-match = '(?i)(headless|--screenshot|screenshot|playwright|puppeteer|capture.{0,12}(image|screen))'
-action = "deny"
-why = "The machine may never run visual or screenshot tests."
+id      = "visual-command"
+enabled = true
+result  = "deny"
+why     = "The machine may never run visual or screenshot tests."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)(headless|--screenshot|screenshot|playwright|puppeteer|capture.{0,12}(image|screen))'
 
 [[rule]]
-id = "human-only-subcommand"
-on = "exec"
-surface = "command"
-match = '(?i)\b(approve|reject|confirm|allow|deny|human-code)\b'
-action = "deny"
-only_if = { computed = "invokes_entry" }
-why = "Authorization subcommands run only in the human's own terminal."
+id      = "human-only-subcommand"
+enabled = true
+result  = "deny"
+why     = "Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)\b(approve|reject|confirm|allow|deny|human-code|reload)\b'
+computed        = "invokes_entry"
 
 [[rule]]
-id = "advance-target"
-on = "exec"
-surface = "command"
-match = 'advance\s+(?!asking\b|planning\b|reporting\b|ready\b|blocked\b)[A-Za-z-]+'
-action = "deny"
-why = "The agent may not advance to that state. Entering executing is a human act."
+id      = "advance-target"
+enabled = true
+result  = "deny"
+why     = "The agent may not advance to that state. Entering executing is a human act."
+
+[rule.if]
+class           = "exec"
+command_matches = 'advance\s+(?!asking\b|planning\b|reporting\b|ready\b|blocked\b)[A-Za-z-]+'
 
 [[rule]]
 id = "self-authorization-write"
@@ -256,64 +267,78 @@ action = "deny"
 why = "That command writes to a human-code path. The human must grant access first."
 
 [[rule]]
-id = "command-too-long"
-on = "exec"
-surface = "command"
-match = '.*'
-action = "deny"
-only_if = { length_over = "max_cmd_len" }
-why = "Command too long. Split it into short single-purpose commands."
+id      = "command-too-long"
+enabled = true
+result  = "deny"
+why     = "Command too long. Split it into short single-purpose commands."
+
+[rule.if]
+class               = "exec"
+command_length_over = 400
 
 [[rule]]
-id = "too-many-statements"
-on = "exec"
-surface = "command"
-match = '.*'
-action = "deny"
-only_if = { statements_over = "max_cmd_stmts" }
-why = "Too many statements chained into one command. Split them and run one at a time."
+id      = "too-many-statements"
+enabled = true
+result  = "deny"
+why     = "Too many statements chained into one command. Split them and run one at a time."
+
+[rule.if]
+class                   = "exec"
+command_statements_over = 3
 
 [[rule]]
-id = "silenced-output"
-on = "exec"
-surface = "command"
-match = '(?i)Out-Null|-Quiet|--quiet|>\s*\$null|2>\s*\$null|/dev/null|-WindowStyle\s+Hidden'
-action = "deny"
-why = "The command silences its output. Everything must stay visible to the human."
+id      = "silenced-output"
+enabled = true
+result  = "deny"
+why     = "The command silences its output. Everything must stay visible to the human."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)Out-Null|-Quiet|--quiet|>\s*\$null|2>\s*\$null|/dev/null|-WindowStyle\s+Hidden'
 
 [[rule]]
-id = "interactive"
-on = "exec"
-surface = "command"
-match = '(?i)Read-Host|ReadKey|-Verb\s+RunAs|(^|[^a-z])sudo\s|cmd(\.exe)?\s+/c'
-action = "deny"
-why = "The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job."
+id      = "interactive"
+enabled = true
+result  = "deny"
+why     = "The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)Read-Host|ReadKey|-Verb\s+RunAs|(^|[^a-z])sudo\s|cmd(\.exe)?\s+/c'
 
 [[rule]]
-id = "test-authorization"
-on = "exec"
-surface = "command"
-match = '(?i)(^|[^a-z])(npm|pnpm|yarn|bun)\s+(run\s+)?test|(^|[^a-z])(jest|vitest|mocha|pytest|tox|ctest|rspec)([^a-z]|$)|(^|[^a-z])(dotnet|go|cargo|mvn|mvnw|gradle|gradlew|phpunit)\s+\S*test'
-action = "deny"
-unless = { fact = "test_authorized", is = "yes" }
-why = "Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes."
+id      = "test-authorization"
+enabled = true
+result  = "deny"
+why     = "Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)(^|[^a-z])(npm|pnpm|yarn|bun)\s+(run\s+)?test|(^|[^a-z])(jest|vitest|mocha|pytest|tox|ctest|rspec)([^a-z]|$)|(^|[^a-z])(dotnet|go|cargo|mvn|mvnw|gradle|gradlew|phpunit)\s+\S*test'
+fact            = "test_authorized"
+is_not          = "yes"
 
 [[rule]]
-id = "toolchain"
-on = "exec"
-surface = "command"
-match = '(?i)(^|[^a-z])(npm|pnpm|yarn|bun|pip|pip3|conda|mamba|poetry|uv|gem|composer|cargo|go|dotnet|apt|apt-get|brew|choco|scoop|winget|pacman|npx|dnf|yum)\s+(install|add|get|i|upgrade|update|env|create)|(^|[^a-z])npx\s'
-action = "deny"
-unless = { fact = "stack_env", is_set = true }
-why = "The human has not declared the existing environment. Do not install or probe on your own."
+id      = "toolchain"
+enabled = true
+result  = "deny"
+why     = "The human has not declared the existing environment. Do not install or probe on your own."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)(^|[^a-z])(npm|pnpm|yarn|bun|pip|pip3|conda|mamba|poetry|uv|gem|composer|cargo|go|dotnet|apt|apt-get|brew|choco|scoop|winget|pacman|npx|dnf|yum)\s+(install|add|get|i|upgrade|update|env|create)|(^|[^a-z])npx\s'
+fact            = "stack_env"
+is_set          = false
 
 [[rule]]
-id = "destructive"
-on = "exec"
-surface = "command"
-match = '(?i)rm\s+-rf\s+/[^.]|git\s+push\s+.*--force|drop\s+table|git\s+reset\s+--hard|Remove-Item.*-Recurse.*-Force'
-action = "deny"
-why = "Destructive command. Hand it to the human."
+id      = "destructive"
+enabled = true
+result  = "deny"
+why     = "Destructive command. Hand it to the human."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)rm\s+-rf\s+/[^.]|git\s+push\s+.*--force|drop\s+table|git\s+reset\s+--hard|Remove-Item.*-Recurse.*-Force'
 
 # Approval is evaluated after every specific rule, so a precise reason beats a generic one.
 [[rule]]
@@ -345,10 +370,11 @@ action = "require_approval"
 why = "This tool performs an action and needs approval."
 
 [[rule]]
-id = "repeat"
-on = "exec"
-surface = "command"
-match = '.*'
-action = "ask"
-only_if = { repeats_at_least = "max_cmd_repeat" }
-why = "The same command again, which suggests you are stuck in a loop. The human decides whether to continue."
+id      = "repeat"
+enabled = true
+result  = "ask"
+why     = "The same command again, which suggests you are stuck in a loop. The human decides whether to continue."
+
+[rule.if]
+class                   = "exec"
+command_repeats_at_least = 3
