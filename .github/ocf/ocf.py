@@ -1124,12 +1124,24 @@ def handle_session_start(root, policy):
 # Gates
 # ---------------------------------------------------------------------------
 
-def gate_context(root, policy):
+# The intake key list and its threshold live here, once. gate_context, gate_missing and the status
+# line all report from this, instead of each holding its own copy of the list to drift away from.
+CONTEXT_KEYS = ("goal", "tools", "references", "deliverables", "code_style")
+CONTEXT_MIN_LEN = 4
+
+
+def context_missing(root, policy):
+    """Return the intake keys that are missing or too short, in list order.
+
+    This is the structured form: a caller that wants to know *which* items are outstanding does not
+    have to recover them from the sentence gate_context prints.
+    """
     facts = load_facts(root, policy)
-    missing = []
-    for key in ("goal", "tools", "references", "deliverables", "code_style"):
-        if len(facts.get(key, "").strip()) < 4:
-            missing.append(key)
+    return [key for key in CONTEXT_KEYS if len(facts.get(key, "").strip()) < CONTEXT_MIN_LEN]
+
+
+def gate_context(root, policy):
+    missing = context_missing(root, policy)
     return (not missing), "missing or too short: %s" % ", ".join(missing) if missing else "all present"
 
 
@@ -1245,12 +1257,8 @@ ENTER_TRANSITION_GATES = {
 
 
 def gate_missing(root, policy):
-    ok, _ = gate_context(root, policy)
-    if ok:
-        return []
-    facts = load_facts(root, policy)
-    return [key for key in ("goal", "tools", "references", "deliverables", "code_style")
-            if len(facts.get(key, "").strip()) < 4]
+    """The list form of gate_context. One line, so it cannot drift from context_missing."""
+    return context_missing(root, policy)
 
 
 def run_gates(root, policy, names):
