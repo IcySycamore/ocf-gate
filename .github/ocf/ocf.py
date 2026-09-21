@@ -94,6 +94,10 @@ PLAN_REL = ".orchestrator/plan.md"
 DEFAULT_STATE_DIR = ".orchestrator"
 
 PLAN_HEADINGS = ("type", "summary", "steps", "tools", "files", "scope", "deliverables", "self-review")
+# What a WRITTEN plan must carry, which is only what a gate actually reads. The eight-section shape is
+# the agent's own working structure and lives in the template; demanding a file repeat it made the
+# human pay for a document nobody read.
+PLAN_REQUIRED = ("steps", "files")
 
 # Entry script recognised only by its full relative path. Merely mentioning the name elsewhere must
 # not inherit the control plane exemption, which was a real bypass in the previous implementation.
@@ -1228,19 +1232,25 @@ def read_plan(root):
 
 
 def gate_plan_schema(root, policy):
+    """A plan given in chat is the default, so an absent file is not a failure.
+
+    The plan is a conversation artefact and a file is written only when the human asks for one. What is
+    checked here is therefore only what such a file must carry when it exists, and only because a gate
+    reads it: Files is compared against human-code.txt by human-code-clear.
+    """
     text = read_plan(root)
     if not text.strip():
-        return False, "%s is missing or empty" % PLAN_REL
+        return True, "no plan file; the plan was given in chat"
     sections = plan_sections(text)
-    missing = [name for name in PLAN_HEADINGS if name not in sections]
-    empty = [name for name in PLAN_HEADINGS
+    missing = [name for name in PLAN_REQUIRED if name not in sections]
+    empty = [name for name in PLAN_REQUIRED
              if name in sections and not "".join(sections[name]).strip()]
     problems = []
     if missing:
         problems.append("missing headings: %s" % ", ".join("## " + item for item in missing))
     if empty:
         problems.append("empty headings: %s" % ", ".join("## " + item for item in empty))
-    return (not problems), "; ".join(problems) if problems else "all 8 sections present"
+    return (not problems), "; ".join(problems) if problems else "all required sections present"
 
 
 def gate_zero_p0(root, policy):
@@ -1268,7 +1278,7 @@ def plan_paths(text):
 def gate_human_code_clear(root, policy):
     text = read_plan(root)
     if not text.strip():
-        return False, "%s is missing" % PLAN_REL
+        return True, "no plan file; the human approves the work itself"
     allowed_file = policy_paths(policy)["allowed_edits_list"]
     human_file = policy_paths(policy)["human_code_list"]
     offenders = []

@@ -9,8 +9,10 @@ shorthand for `python .github/ocf/ocf.py <cmd>`.
 
 1. Run status. Once `gate grill-valid` passes, advance planning, which runs the entry gates context,
    docs-decision and grill-valid.
-2. Write .orchestrator/plan.md on the template at `.github/assets/plan-template.md`: all 8 sections,
-   with the headings spelled exactly as the template spells them. Files must name the exact paths to
+2. Give the plan in chat by default: the goal in one sentence, the requirements (the reference design
+   and the process steps), and the deliverables. Do not write a plan file unless the human asks for
+   one; when they do, write it on the template at `.github/assets/plan-template.md` and it must carry
+   `## Steps` and `## Files`, because those are the two a gate reads. Files must name the exact paths to
    change, because human-code-clear compares them against human-code.txt; on a collision ask the human
    to allow the path.
 3. Dispatch the plan-auditor subagent for an independent review; never audit your own plan. It returns
