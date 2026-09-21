@@ -38,8 +38,9 @@ enabled = false
 
 [paths]
 state_dir = ".orchestrator"
-human_code_list = ".orchestrator/human-code.txt"
-allowed_edits_list = ".orchestrator/allowed-edits.txt"
+# The protected list is a FIXED file, not a configured path: a list that can be pointed elsewhere is a
+# list that can be pointed away. Its entries are the files the machine never modifies, and a comment
+# inside it marks the ones that are human-written.
 
 [limits]
 # Read on every invocation, so changes apply without reloading the window.
@@ -231,7 +232,7 @@ why = "Writing a human-only subcommand into an executable file is self-authoriza
 id = "self-protection-path"
 on = "edit"
 surface = "path"
-match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.orchestrator/(state|facts|human-code\.txt|allowed-edits\.txt|journal\.log|exec\.log)$'
+match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.orchestrator/(state|facts|protected\.txt|journal\.log|exec\.log)$'
 when = "enforced"
 action = "deny"
 why = "The orchestrator's own files. The human edits them by hand, or sets system.enabled = false."
@@ -245,26 +246,18 @@ when = "enforced"
 action = "deny"
 why = "A command may not write to the orchestrator's own files."
 
-# Human code: only when the path is actually listed, and only when it is not explicitly allowed.
+# The protected list. One rule covers both the editing tools and the terminal, because the condition
+# judges the paths the action touches wherever they came from - which is why no "-write" twin is needed.
+# There is no exemption to grant: the list is the list.
 [[rule]]
-id = "human-code"
-on = "edit"
-surface = "path"
-match = '.*'
-only_if = { listed_in = ".orchestrator/human-code.txt" }
-exempt_when_listed = ".orchestrator/allowed-edits.txt"
-action = "deny"
-why = "That path is human code. The human must grant access from their own terminal first."
+id      = "protected-file"
+enabled = true
+result  = "deny"
+why     = "That path is on the protected list. Only the human may change it."
 
-[[rule]]
-id = "human-code-write"
-on = "exec"
-surface = "write_target"
-match = '.*'
-only_if = { listed_in = ".orchestrator/human-code.txt" }
-exempt_when_listed = ".orchestrator/allowed-edits.txt"
-action = "deny"
-why = "That command writes to a human-code path. The human must grant access first."
+[rule.if]
+class             = "edit,exec"
+touches_protected = true
 
 [[rule]]
 id      = "command-too-long"

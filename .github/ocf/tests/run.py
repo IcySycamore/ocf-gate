@@ -64,10 +64,12 @@ def build_root(case):
     facts = case.get("facts") or {}
     write(os.path.join(".orchestrator", "facts"),
           "".join("%s=%s\n" % (key, facts[key]) for key in sorted(facts)))
-    write(os.path.join(".orchestrator", "human-code.txt"),
-          "".join(line + "\n" for line in (case.get("human_code") or [])))
-    write(os.path.join(".orchestrator", "allowed-edits.txt"),
-          "".join(line + "\n" for line in (case.get("allowed_edits") or [])))
+    # One protected list, and no exemption. The legacy case fields still describe which paths are
+    # protected, so the older cases keep meaning the same thing; allowed_edits is deliberately ignored,
+    # because the mechanism it stood for is gone.
+    protected = list(case.get("protected") or []) or list(case.get("human_code") or [])
+    write(os.path.join(".orchestrator", "protected.txt"),
+          "".join(line + "\n" for line in protected))
     log = case.get("exec_log") or []
     if log:
         write(os.path.join(".orchestrator", "exec.log"),

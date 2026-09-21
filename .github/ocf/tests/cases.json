@@ -238,11 +238,11 @@
       }
     },
     "expect": "deny",
-    "expect_rule": "human-code"
+    "expect_rule": "protected-file"
   },
   {
-    "id": "human-code-exempted-by-allow",
-    "why": "allowed-edits.txt is the human's grant and must actually lift the human-code block. The path is CONTEXT.md rather than .github/copilot-instructions.md because T9 made that file self-protected, and self-protection outranks the exemption.",
+    "id": "no-grant-lifts-the-protected-list",
+    "why": "The exemption mechanism is gone by design: allowed_edits is still set here and it must NOT lift the block. A list that can be pointed away is not a list, and this pins that the second file no longer has any power.",
     "state": "executing",
     "human_code": ["CONTEXT.md"],
     "allowed_edits": ["CONTEXT.md"],
@@ -253,8 +253,8 @@
         "content": "text\n"
       }
     },
-    "expect": "allow",
-    "expect_rule": "default"
+    "expect": "deny",
+    "expect_rule": "protected-file"
   },
   {
     "id": "silenced-output-denied",
@@ -321,17 +321,17 @@
   },
   {
     "id": "batch-edit-not-over-blocked",
-    "why": "Regression: a listed_in precondition judged over the whole batch let one human-code path (already allowed) drag every other path into the denial. The path is CONTEXT.md because T9 made .github/copilot-instructions.md self-protected, which is a different rule doing a different job.",
+    "why": "Regression: a listed_in precondition judged over the whole batch let one protected path drag every other path into the denial. The batch here touches no protected path at all, while the list does name one.",
     "state": "executing",
-    "human_code": ["CONTEXT.md"],
-    "allowed_edits": ["CONTEXT.md"],
+    "human_code": ["docs/**"],
+    "allowed_edits": ["docs/**"],
     "payload": {
       "tool_name": "multi_replace_string_in_file",
       "tool_input": {
         "replacements": [
           { "filePath": "src/app.py", "oldString": "a", "newString": "b" },
           {
-            "filePath": "CONTEXT.md",
+            "filePath": "src/other.py",
             "oldString": "a",
             "newString": "b"
           }
@@ -359,7 +359,7 @@
   },
   {
     "id": "batch-edit-names-the-offending-path",
-    "why": "When a batch really does touch human code, the block must name that file rather than some other file in the same batch.",
+    "why": "When a batch really does touch a protected path, the block must name that file rather than some other file in the same batch.",
     "state": "executing",
     "human_code": ["docs/**"],
     "payload": {
@@ -372,7 +372,7 @@
       }
     },
     "expect": "deny",
-    "expect_rule": "human-code",
+    "expect_rule": "protected-file",
     "expect_reason_contains": ["docs/notes.md"]
   },
   {

@@ -229,8 +229,6 @@ DEFAULT_POLICY = {
     "system": {"enabled": True},
     "paths": {
         "state_dir": DEFAULT_STATE_DIR,
-        "human_code_list": ".orchestrator/human-code.txt",
-        "allowed_edits_list": ".orchestrator/allowed-edits.txt",
     },
     "limits": {"max_cmd_len": 400, "max_cmd_stmts": 3, "max_cmd_repeat": 3, "fail_budget": 2},
     "approval": {"allowed_states": ["executing", "reporting"], "min_reason_len": 8},
@@ -953,6 +951,14 @@ FLAT_VALUE_CONDITIONS = {
         as_bool(value) == listed_in(context.root, PROTECTED_LIST_REL, candidate),
 }
 
+# Value-scoped conditions judge the paths an action touches, never the whole text it carries. Reading
+# them off "any" would let a path that merely appears inside a command or in the content decide the
+# verdict - and for an allow rule that is a hole, not a nuisance.
+VALUE_CANDIDATE_SOURCE = {
+    "path_matches": lambda context: list(context.paths) + list(context.targets),
+    "touches_protected": lambda context: list(context.paths) + list(context.targets),
+}
+
 FLAT_FACT_KEYS = ("fact", "is", "is_not", "is_set")
 
 
@@ -970,16 +976,20 @@ def evaluate_rule_v2(context, rule):
     fact_part = {key: conditions[key] for key in FLAT_FACT_KEYS if key in conditions}
     if fact_part and not condition_holds(context, fact_part):
         return None
-    candidates = context.surface("any")
-    for name, spec in conditions.items():
-        if name in FLAT_FACT_KEYS:
-            continue
-        test = FLAT_VALUE_CONDITIONS.get(name)
-        if test is None:
-            continue
-        candidates = [value for value in candidates if test(context, spec, value)]
-        if not candidates:
-            return None
+    candidates = []
+    value_conditions = [name for name in conditions if name in FLAT_VALUE_CONDITIONS]
+    pool = []
+    for name in value_conditions:
+        source = VALUE_CANDIDATE_SOURCE.get(name)
+        for value in (source(context) if source else context.surface("any")):
+            if value not in pool:
+                pool.append(value)
+    for value in (pool if value_conditions else context.surface("any")):
+        if all(FLAT_VALUE_CONDITIONS[name](context, conditions[name], value)
+               for name in value_conditions):
+            candidates.append(value)
+    if value_conditions and not candidates:
+        return None
     for name, spec in conditions.items():
         if name in FLAT_FACT_KEYS or name in FLAT_VALUE_CONDITIONS:
             continue
@@ -1392,16 +1402,14 @@ def plan_paths(text):
 
 
 def gate_human_code_clear(root, policy):
+    """The plan must not touch a protected path. There is no exemption to grant: the list is the list."""
     text = read_plan(root)
     if not text.strip():
         return True, "no plan file; the human approves the work itself"
-    allowed_file = policy_paths(policy)["allowed_edits_list"]
-    human_file = policy_paths(policy)["human_code_list"]
-    offenders = []
-    for path in plan_paths(text):
-        if listed_in(root, human_file, path) and not listed_in(root, allowed_file, path):
-            offenders.append(path)
-    return (not offenders), "touches human code: %s" % ", ".join(offenders) if offenders else "none"
+    offenders = [path for path in plan_paths(text)
+                 if listed_in(root, PROTECTED_LIST_REL, path)]
+    return (not offenders), "touches protected paths: %s" % ", ".join(offenders) if offenders \
+        else "none"
 
 
 def gate_stack_env(root, policy):
@@ -1737,10 +1745,15 @@ def cmd_confirm(root, policy, args):
     return 0
 
 
-def update_list(root, policy, which, path, add):
-    relative = policy_paths(policy)[which]
-    absolute = os.path.join(root, relative)
-    entries = load_list(root, relative)
+def update_list(root, path, add):
+    """Add or remove one entry in the protected list. Reached only from the human's own terminal.
+
+    Comment lines are preserved: the list carries the notes that say which entries are human-written,
+    and a command that silently dropped them would lose the one annotation the list has.
+    """
+    absolute = os.path.join(root, PROTECTED_LIST_REL)
+    entries = load_list(root, PROTECTED_LIST_REL)
+    notes = [line for line in (read_lines(absolute) or []) if line.strip().startswith("#")]
     path = (path or "").strip()
     if not path:
         raise OcfError("environment", "that command needs a path argument")
@@ -1748,14 +1761,13 @@ def update_list(root, policy, which, path, add):
     if add:
         if key not in entries:
             entries.append(key)
-            write_text(absolute, "".join(entry + "\n" for entry in entries))
-        out("added %s to %s" % (key, relative))
+        out("protected: %s" % key)
     else:
-        remaining = [entry for entry in entries if norm_path("", entry) != key]
-        write_text(absolute, "".join(entry + "\n" for entry in remaining))
-        out("removed %s from %s" % (key, relative))
-    journal(root, policy, read_state(root, policy), "%s %s %s" % (
-        "allow" if add else "deny", which, key))
+        entries = [entry for entry in entries if norm_path("", entry) != key]
+        out("no longer protected: %s" % key)
+    write_text(absolute, "".join(line + "\n" for line in notes + entries))
+    journal(root, policy, read_state(root, policy), "%s %s" % (
+        "protect" if add else "unprotect", key))
     return 0
 
 
@@ -1779,12 +1791,9 @@ COMMAND_HANDLERS = {
     "approve": cmd_approve,
     "reject": cmd_reject,
     "confirm": cmd_confirm,
-    "allow": lambda root, policy, args: update_list(root, policy, "allowed_edits_list",
-                                                    args[0] if args else "", True),
-    "deny": lambda root, policy, args: update_list(root, policy, "allowed_edits_list",
-                                                   args[0] if args else "", False),
-    "human-code": lambda root, policy, args: update_list(root, policy, "human_code_list",
-                                                         args[0] if args else "", True),
+    "allow": lambda root, policy, args: update_list(root, args[0] if args else "", False),
+    "deny": lambda root, policy, args: update_list(root, args[0] if args else "", True),
+    "human-code": lambda root, policy, args: update_list(root, args[0] if args else "", True),
 }
 
 
