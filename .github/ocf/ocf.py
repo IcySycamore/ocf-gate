@@ -885,10 +885,28 @@ def cmd_hook(root, argv):
         return 0
 
 
+def log_prompt(root, policy, payload, state):
+    """Record every UserPromptSubmit, enough to tell who actually spoke.
+
+    Temporary instrumentation, not a rule: nothing reads it back. It exists because the gate has no
+    reliable signal for "a human really replied", and the honest way to settle that is to look at what
+    the hook actually receives rather than to reason about it. Delete it once the question is answered.
+    """
+    prompt = " ".join(str(payload.get("prompt") or "").split())[:160]
+    session = str(payload.get("session_id") or "")[:8]
+    path = os.path.join(state_dir(root, policy), "prompt-log")
+    parent = os.path.dirname(path)
+    if not os.path.isdir(parent):
+        os.makedirs(parent)
+    with open(path, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write("%s | %s | %s | %s\n" % (now_stamp(), session, state, prompt))
+
+
 def handle_prompt(root, policy, payload):
     state = read_state(root, policy)
     facts = load_facts(root, policy)
     prompt = payload.get("prompt") or ""
+    log_prompt(root, policy, payload, state)
     lines = []
     if state == "ready":
         write_state(root, policy, "asking")

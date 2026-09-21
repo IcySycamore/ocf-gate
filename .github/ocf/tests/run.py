@@ -335,6 +335,40 @@ def test_gate_files_protected():
     check_gate_files_protected()
 
 
+def check_prompt_instrumentation():
+    """A UserPromptSubmit must leave a record, because that record is what settles who spoke.
+
+    The gate has no reliable signal for "a human really replied". Until the instrumentation answers
+    that, no rule may depend on one - a rule built on an unverified signal fails by locking the agent
+    out, which is the other accident this project exists to prevent.
+    """
+    root = tempfile.mkdtemp(prefix="ocf-prompt-")
+    try:
+        os.makedirs(os.path.join(root, ".github", "ocf"))
+        os.makedirs(os.path.join(root, ".orchestrator"))
+        shutil.copyfile(POLICY, os.path.join(root, ".github", "ocf", "policy.toml"))
+        with open(os.path.join(root, ".orchestrator", "state"), "w", encoding="utf-8") as handle:
+            handle.write("asking\n")
+        env = dict(os.environ)
+        env["OCF_ROOT"] = root
+        payload = {"hook_event_name": "UserPromptSubmit", "session_id": "abcdef1234567890",
+                   "prompt": "a human sentence"}
+        subprocess.run([sys.executable, ENTRY, "hook"], input=json.dumps(payload).encode("utf-8"),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+        path = os.path.join(root, ".orchestrator", "prompt-log")
+        assert os.path.exists(path), "a UserPromptSubmit wrote no prompt-log, so nothing can be settled"
+        with open(path, "r", encoding="utf-8") as handle:
+            line = handle.read().strip()
+        assert "abcdef12" in line, "prompt-log did not record the session: %r" % line
+        assert "a human sentence" in line, "prompt-log did not record the prompt: %r" % line
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_prompt_instrumentation():
+    check_prompt_instrumentation()
+
+
 def scan_non_ascii():
     """Return .github-relative paths that hold non-ASCII bytes.
 
@@ -367,6 +401,7 @@ CHECKS = (
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),
+    ("prompt-instrumentation", test_prompt_instrumentation),
 )
 
 
