@@ -52,6 +52,11 @@ TRANSITIONS = {
     "states": STATES,
     "agent_targets": ("asking", "planning", "reporting", "ready", "blocked"),
     "acting_states": ("executing", "reporting"),
+    # The happy path and the way out of it. Held here rather than drawn as a diagram in a document,
+    # because a diagram is prose: nothing compares it to STATES, so a state renamed in the code leaves
+    # the drawing behind and the drawing is what the human reads first.
+    "flow": ("ready", "asking", "planning", "executing", "reporting", "ready"),
+    "bypass": "blocked",
     "gates": {
         ("asking", "planning"): ("context", "docs-decision", "grill-valid"),
         ("planning", "executing"): ("plan-schema", "zero-p0", "human-code-clear", "stack-env"),
@@ -349,7 +354,7 @@ COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
 # `reload` writes it into the instructions the model reads on every turn. The occasion is therefore a
 # moment in the conversation, not a tool call: the hard vocabulary (class, tool, command, path) has no
 # meaning when no tool is being called.
-SOFT_OCCASIONS = ("session-start", "answer", "act", "plan")
+SOFT_OCCASIONS = ("session-start", "ask", "plan", "act", "answer")
 RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
              "exempt_when_listed",
              # The newer shape. Both are accepted while the policy is converted rule by rule.
@@ -525,35 +530,65 @@ def one_line(text):
 
 
 def render_instructions(policy):
-    """Render the generated block. Pure: same policy in, same text out, so it can be compared."""
+    """Render the whole standing contract. Pure: same policy in, same text out, so it can be compared.
+
+    The whole document, not a fragment spliced into prose. It was prose with a generated paragraph in
+    the middle, and the prose went stale within one stage: it still listed the human-only commands
+    without `reload`, still told the machine not to hand-edit two files that had been deleted, and
+    still described three behaviours that are now rules. None of that was checkable, because a
+    sentence is not compared to anything. Everything derivable is rendered from the table it derives
+    from, and everything that is genuinely a rule is a rule.
+    """
     lines = [INSTRUCTIONS_BEGIN,
-             "<!-- Written by `python .github/ocf/ocf.py reload` from the soft rules in",
-             "     .github/ocf/policy.toml. Do not edit by hand - the next reload overwrites it.",
-             "     Edit the rules in that file and run reload. -->",
+             "<!-- Written by `python .github/ocf/ocf.py reload` from the tables in this program and",
+             "     the rules in .github/ocf/policy.toml. Do not edit by hand - the next reload",
+             "     overwrites everything above the OCF:END marker. Edit the rules in that file and",
+             "     run reload. Anything you add below the marker is yours and survives. -->",
              "",
-             "## Command vocabulary",
+             "# Work Control Flow",
              "",
-             "Generated from the same table the program dispatches on, so this list cannot drift "
-             "away from what the entry point actually accepts.",
+             "Full rules: [work-control-flow.md](./work-control-flow.md). Read it before first acting "
+             "and whenever your attention begins to drift.",
+             "",
+             "## Entry point",
+             "",
+             "    Windows: python .github\\ocf\\ocf.py <cmd>",
+             "    Other:   python3 .github/ocf/ocf.py <cmd>",
+             "",
+             "## Commands",
              ""]
+    indent = " " * len("human: ")
     for side, groups in (("agent", TRANSITIONS["commands"]["agent"]),
                          ("human", TRANSITIONS["commands"]["human"])):
-        indent = " " * len("human: ")
         for index, group in enumerate(groups):
-            lines.append("%s%s%s" % (side + ": " if index == 0 else indent,
-                                      "" if index == 0 else "", " | ".join(group)))
+            lines.append("%s%s" % (side + ": " if index == 0 else indent, " | ".join(group)))
     lines += ["",
               "A human-only command is refused even if the human asks you in the conversation to run "
               "it. \"The human already said yes\" is not approval; approval is the human running the "
               "command in their own terminal. If they want it to stop, they turn the rule off or edit "
               "the config - they do not authorise it by asking.",
               "",
-              "## Soft rules",
+              "Never hand-edit the files under %s. The protected list is %s; only the human changes "
+              "either." % (state_dir_relative(policy), PROTECTED_LIST_REL),
+              "",
+              "## State machine",
+              "",
+              "    %s      bypass: %s" % (" -> ".join(TRANSITIONS["flow"]), TRANSITIONS["bypass"]),
+              "",
+              "Entering a state through a gate means the gate passed. What each one requires:",
+              ""]
+    for (source, target), names in sorted(TRANSITIONS["gates"].items()):
+        lines.append("- %s -> %s: %s" % (source, target, ", ".join(names)))
+    lines += ["",
+              "Only the human, running `python .github/ocf/ocf.py approve \"<reason>\"` in their own "
+              "terminal, enters executing. Never run it for them and never set approved_by yourself.",
+              ""]
+    rules = soft_rules(policy)
+    lines += ["## Soft rules",
               "",
               "No hook can enforce these: nothing can check whether a sentence was written. They are "
               "put in front of you instead. Each one names the moment it applies to.",
               ""]
-    rules = soft_rules(policy)
     written = 0
     for occasion in SOFT_OCCASIONS:
         group = [rule for rule in rules
@@ -573,8 +608,18 @@ def render_instructions(policy):
         written += len(group)
     if not written:
         lines += ["No soft rule is switched on, so there is nothing to say here.", ""]
-    lines.append(INSTRUCTIONS_END)
+    lines += ["## When a gate blocks you",
+              "",
+              "Fix the precondition it names: supply the missing fact, split the command, stop "
+              "silencing output, go ask the human. Never rewrite your way around it. Circumventing a "
+              "gate is a serious violation.",
+              "",
+              INSTRUCTIONS_END]
     return "\n".join(lines)
+
+
+def state_dir_relative(policy):
+    return policy_paths(policy)["state_dir"].replace("\\", "/") + "/"
 
 
 def write_instructions(root, policy):

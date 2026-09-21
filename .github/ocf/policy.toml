@@ -385,13 +385,65 @@ command_repeats_at_least = 3
 # Field by field, same five as a hard rule:
 #   enabled  是否启用    switched off means the sentence is not written out at all
 #   kind     the rule is soft, so `reload` writes it instead of the gate reading it
-#   if       命中情景    occasion = the moment it applies to; one of session-start, answer, act, plan
+#   if       命中情景    occasion = the moment it applies to; one of session-start, ask, plan, act,
+#                        answer
 #   unless   绕过情景    the exception, in the human's own words: a soft rule is judged by the model,
 #                        because no code can evaluate "is this explanation needed here"
 #   result   规则逻辑    the sentence that goes in front of the model - prose, not a verdict
 #   why      规则描述    the one-line note for whoever reads this file
 #
 # Order does not matter here: soft rules are never evaluated in sequence, they are grouped by occasion.
+
+[[rule]]
+id      = "intake-grilling"
+kind    = "soft"
+label   = "只问缺的"
+enabled = true
+why     = "八段式是给模型自己看的工作结构，人类只给三段；缺的那些要么从上下文推出来，要么问。猜一个值等于把人类的决定偷换成模型的。"
+result  = """
+人类的三段式陈述结束后，
+你自己把八段式里每一条都试着从上下文和陈述中确定下来，
+只把真的缺的那部分拿去问，一轮问一个问题。
+不要猜，也不要替人类填：缺的就是缺的。
+敷衍或自动化的回答不算回答，重问。"""
+unless  = "人类明确说了「按默认来」「你决定」，这一段的质询就可以跳过。"
+
+[rule.if]
+occasion = "ask"
+
+[[rule]]
+id      = "independent-audit"
+kind    = "soft"
+label   = "独立审计"
+enabled = true
+why     = "自己审自己的计划必然通过。审计要交给子代理，且 P0 为零时只交报告、不推进状态。"
+result  = """
+计划写完，派 plan-auditor 子代理做独立审计，
+不要自己审自己的计划。
+P0 为零时，把行动报告和风险设计报告交给人类，
+把
+
+    python .github/ocf/ocf.py approve "<reason>"
+
+原样递给他们，然后停下。批准只能由人类在自己的终端里跑出。"""
+unless  = "还没有计划可审的时候（例如这一轮只是在澄清需求），不适用。"
+
+[rule.if]
+occasion = "plan"
+
+[[rule]]
+id      = "no-screenshots"
+kind    = "soft"
+label   = "截图只能由人类给"
+enabled = true
+why     = "视觉类工具被永久禁用，所以需要看画面时必须说清楚要什么、几张，再由人类附上。"
+result  = """
+要看画面时，写清楚要截什么、截几张，然后请人类把截图附上来。
+截图是可以读的附件，截图工具是永久禁止的。
+不要绕：不要用命令行、无头浏览器或任何其他途径去自己生成图像。"""
+
+[rule.if]
+occasion = "act"
 
 [[rule]]
 id      = "beginner-mode"

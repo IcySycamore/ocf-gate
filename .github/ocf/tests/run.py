@@ -561,6 +561,22 @@ def check_transition_table():
     if unmentioned:
         problems.append("no part of the table mentions the state(s) %s, so nothing governs them"
                         % ", ".join(unmentioned))
+    # The happy path is drawn from the table now, so it is checked like the rest of it. A state renamed
+    # in STATES used to leave the diagram in the contract behind, and the diagram is what gets read.
+    for name in table["flow"]:
+        if name not in ocf.STATES:
+            problems.append("the flow names %r, which is not a state" % name)
+    if table["flow"][0] != table["flow"][-1]:
+        problems.append("the flow starts at %r and ends at %r, so it does not describe a cycle"
+                        % (table["flow"][0], table["flow"][-1]))
+    if table["bypass"] not in ocf.STATES:
+        problems.append("the bypass names %r, which is not a state" % table["bypass"])
+    if table["bypass"] in table["flow"]:
+        problems.append("the bypass %r is on the happy path, so it bypasses nothing" % table["bypass"])
+    for name in ocf.SOFT_OCCASIONS:
+        if not name.isascii() or name != name.strip().lower():
+            problems.append("the occasion %r is not a plain lowercase token; it is matched verbatim "
+                            "against the policy, so a stray space makes a rule silently inert" % name)
     declared = set()
     for group in table["commands"].values():
         for line in group:
