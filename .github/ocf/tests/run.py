@@ -409,19 +409,36 @@ def scan_non_ascii():
         folders[:] = [name for name in folders if name not in ("__pycache__", ".pytest_cache")]
         for name in files:
             path = os.path.join(folder, name)
+            relative = os.path.relpath(path, REPO).replace("\\", "/")
             with open(path, "rb") as handle:
                 data = handle.read()
             if data.startswith(b"\xef\xbb\xbf"):
                 data = data[3:]
             if any(byte > 127 for byte in data):
-                offenders.append(os.path.relpath(path, REPO))
+                offenders.append(relative)
     return offenders
 
 
+# The ASCII rule keeps a class of encoding bugs out of code and out of everything the toolchain
+# touches. These files are not code that runs in the toolchain: policy.toml is the human's own rules,
+# copilot-instructions.md is prose addressed to the human and the model, and run.py has to be able to
+# state the real text it asserts on - a check about where spaces land in Chinese cannot be written in
+# English and still test Chinese. ocf.py is deliberately NOT on this list, because its output is what
+# reaches a console that may not be UTF-8. The exemption is a list of named paths rather than a suffix
+# or a folder, because the value of the rule is that it has no convenient way around it: a new file has
+# to argue for itself here.
+NON_ASCII_ALLOWED = (
+    ".github/ocf/policy.toml",
+    ".github/copilot-instructions.md",
+    ".github/ocf/tests/run.py",
+)
+
+
 def test_repo_is_ascii():
-    """Every agent-facing file under .github is ASCII, which removes a whole class of encoding bugs."""
-    offenders = scan_non_ascii()
-    assert not offenders, "non-ASCII bytes in: %s" % ", ".join(offenders)
+    """Every agent-facing file under .github is ASCII, apart from the two prose files named above."""
+    offenders = [path for path in scan_non_ascii() if path not in NON_ASCII_ALLOWED]
+    assert not offenders, ("non-ASCII bytes in: %s (allowed: %s)"
+                           % (", ".join(offenders), ", ".join(NON_ASCII_ALLOWED)))
 
 
 def check_plan_template():
@@ -469,9 +486,15 @@ def check_policy_vocabulary():
     probe["rule"] = list(probe.get("rule", [])) + [
         {"id": "probe-unknown-identifiers", "on": "not_a_class", "surface": "not_a_surface",
          "action": "deny", "only_if": {"not_a_condition": 1, "length_over": "not_a_limit"}},
+        {"id": "probe-soft-without-occasion", "kind": "soft", "result": "a sentence", "if": {}},
+        {"id": "probe-soft-without-a-sentence", "kind": "soft", "if": {"occasion": "answer"}},
+        {"id": "probe-soft-on-a-tool-condition", "kind": "soft", "result": "a sentence",
+         "if": {"occasion": "answer", "class": "exec"}},
     ]
     found = "; ".join(text for _, text in ocf.policy_findings(probe))
-    for needle in ("not_a_class", "not_a_surface", "not_a_condition", "not_a_limit"):
+    for needle in ("not_a_class", "not_a_surface", "not_a_condition", "not_a_limit",
+                   "probe-soft-without-occasion", "probe-soft-without-a-sentence",
+                   "probe-soft-on-a-tool-condition"):
         assert needle in found, ("the validator did not report %r, and a validator that reports "
                                  "nothing cannot fail. Got: %s" % (needle, found or "(nothing)"))
     # Reporting is not enough on its own: the hook used to receive the policy warnings and never
@@ -662,6 +685,137 @@ def test_new_rule_shape():
     check_new_rule_shape()
 
 
+def check_soft_rules_never_gate():
+    """A soft rule must be invisible to the gate, proven by a rule that would deny everything.
+
+    A soft rule's logic is a sentence, not a verdict. If the gate ever reads one as a verdict, the
+    action becomes that sentence, DECISION_MAP does not recognise it, and the fail-safe turns every
+    tool call into a denial - a total lockout caused by adding a sentence to a config file. So the
+    probe here is a soft rule with the broadest possible occasion: if the skip were removed, this
+    check would deny rather than pass.
+    """
+    ocf = load_ocf_module()
+    root = build_root({"state": "executing"})
+    try:
+        policy, warnings = ocf.load_policy(root)
+        assert not warnings, "the probe policy did not load cleanly: %r" % (warnings,)
+        soft = [rule for rule in policy["rule"] if rule.get("kind") == "soft"]
+        assert soft, ("the shipped policy has no soft rule, so this check proves nothing: the "
+                      "generated instructions would be written from an empty set")
+        payload = {"tool_name": "run_in_terminal",
+                   "tool_input": {"command": "python .github/ocf/ocf.py status"}}
+        context = ocf.Context(root, policy, payload)
+        probe = {"id": "probe-soft", "kind": "soft", "enabled": True,
+                 "result": "deny", "if": {"occasion": "act"}}
+        for rule in list(soft) + [probe]:
+            verdict = ocf.evaluate_rule(context, rule)
+            assert verdict is None, (
+                "the soft rule %r produced the verdict %r. A sentence read as a verdict denies "
+                "everything the fail-safe cannot map." % (rule.get("id"), verdict))
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_soft_rules_never_gate():
+    check_soft_rules_never_gate()
+
+
+def check_generated_instructions():
+    """The written block must equal what the policy renders, and half a block must be refused.
+
+    Three failures, all silent: a block that drifted from the policy means the model is following
+    rules the human has already changed; a reload that eats the prose around the block means the
+    hand-written contract slowly disappears; and a half-deleted block means the next reload eats
+    whatever followed the marker. All three are probes against a temp root, so the check proves it can
+    pass as well as fail - a guard that only ever reports "no block" cannot tell a correct file from a
+    broken one.
+    """
+    ocf = load_ocf_module()
+    policy, _ = ocf.load_policy(REPO)
+    block = ocf.render_instructions(policy)
+    prose = "hand-written contract\n\n"
+    probe = build_root({"state": "executing"})
+    try:
+        target = os.path.join(probe, ocf.INSTRUCTIONS_REL)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+
+        def seed(text):
+            with open(target, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(text)
+
+        def current():
+            with open(target, "r", encoding="utf-8") as handle:
+                return handle.read()
+
+        seed(prose + block + "\n")
+        ocf.write_instructions(probe, policy)
+        assert current() == prose + block + "\n", (
+            "reload changed a file that already matched the policy, so it is not idempotent and "
+            "every run rewrites the human's file: %r" % current()[:120])
+
+        seed(prose + ocf.INSTRUCTIONS_BEGIN + "\nstale\n" + ocf.INSTRUCTIONS_END + "\ntail\n")
+        ocf.write_instructions(probe, policy)
+        assert current() == prose + block + "\ntail\n", (
+            "reload did not replace exactly the marked block, so it either lost the prose around it "
+            "or left the stale text in place: %r" % current()[:200])
+
+        seed(prose + ocf.INSTRUCTIONS_END + "\ntail\n")
+        try:
+            ocf.write_instructions(probe, policy)
+        except ocf.OcfError:
+            pass
+        else:
+            raise AssertionError("a file with the end marker but no begin marker was rewritten "
+                                 "anyway; that reload would have eaten the prose around it")
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+    path = os.path.join(REPO, ocf.INSTRUCTIONS_REL)
+    with open(path, "r", encoding="utf-8") as handle:
+        text = handle.read()
+    assert ocf.INSTRUCTIONS_BEGIN in text, (
+        "%s has no generated block. Run `python .github/ocf/ocf.py reload` in your own terminal to "
+        "write it: the soft rules reach the model only through that block." % ocf.INSTRUCTIONS_REL)
+    start = text.index(ocf.INSTRUCTIONS_BEGIN)
+    end = text.index(ocf.INSTRUCTIONS_END, start) + len(ocf.INSTRUCTIONS_END)
+    assert text[start:end] == block, (
+        "the generated block in %s no longer matches the soft rules in policy.toml, so the model is "
+        "reading a rule the human has already changed. Run `python .github/ocf/ocf.py reload`."
+        % ocf.INSTRUCTIONS_REL)
+
+
+def test_generated_instructions():
+    check_generated_instructions()
+
+
+def check_rule_text_is_flattened():
+    """A soft rule's text reaches the model as one line, with the spaces the human meant and no others.
+
+    This was wrong three times in a row, each time invisibly: joining every wrap on a space put one
+    inside a Chinese sentence, joining none of them ran Latin words into the Chinese beside them, and
+    dropping the whitespace after a break lost the space in front of an indented path. The terminal
+    could not be used to check any of it - its own line wrapping inserts spaces - so the rule is pinned
+    here as comparisons rather than looked at.
+    """
+    ocf = load_ocf_module()
+    cases = (
+        ("它是什么、在\n这里指什么", "它是什么、在这里指什么"),
+        ("先读\n  CONTEXT.md\n  和\n  docs/adr/\n：就这样", "先读 CONTEXT.md 和 docs/adr/：就这样"),
+        ("run\nthe command", "run the command"),
+        ("  补进\n  .orchestrator/glossary.md；", "补进 .orchestrator/glossary.md；"),
+        ("一句话定义 - 用法", "一句话定义 - 用法"),
+    )
+    for source, expected in cases:
+        got = ocf.one_line(source)
+        assert got == expected, ("one_line(%r) gave %r, expected %r. The text lands in front of the "
+                                 "model verbatim, so a wrong space here is a wrong instruction."
+                                 % (source, got, expected))
+
+
+def test_rule_text_is_flattened():
+    check_rule_text_is_flattened()
+
+
 CHECKS = (
     ("repo-ascii", test_repo_is_ascii),
     ("plan-template", test_plan_template),
@@ -669,6 +823,9 @@ CHECKS = (
     ("transition-table", test_transition_table),
     ("gated-transitions", test_gated_transitions),
     ("new-rule-shape", test_new_rule_shape),
+    ("soft-rules-never-gate", test_soft_rules_never_gate),
+    ("rule-text-flattened", test_rule_text_is_flattened),
+    ("generated-instructions", test_generated_instructions),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),

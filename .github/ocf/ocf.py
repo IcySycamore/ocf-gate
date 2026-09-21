@@ -61,7 +61,8 @@ TRANSITIONS = {
         "agent": (("status", "set", "gate", "journal", "fail", "ok"),
                   ("advance", "init", "selftest")),
         "human": (("approve", "reject", "confirm"),
-                  ("allow", "deny", "human-code")),
+                  ("allow", "deny", "human-code"),
+                  ("reload",)),
     },
     "usage": {
         "status": "status",
@@ -73,6 +74,7 @@ TRANSITIONS = {
         "advance": 'advance <%s> ["<reason>"]',
         "init": "init",
         "selftest": "selftest",
+        "reload": "reload",
         "approve": 'approve "<reason>"',
         "reject": 'reject ["<reason>"]',
         "confirm": "confirm",
@@ -341,10 +343,17 @@ WHEN_VALUES = ("always", "not_approved", "approved", "enforced", "not_enforced")
 SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
 ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
 COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
+
+# When a soft rule applies. A soft rule is the one kind of rule no hook can enforce - nothing can
+# check whether a sentence was written - so instead of a verdict it carries the sentence itself, and
+# `reload` writes it into the instructions the model reads on every turn. The occasion is therefore a
+# moment in the conversation, not a tool call: the hard vocabulary (class, tool, command, path) has no
+# meaning when no tool is being called.
+SOFT_OCCASIONS = ("session-start", "answer", "act", "plan")
 RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
              "exempt_when_listed",
              # The newer shape. Both are accepted while the policy is converted rule by rule.
-             "enabled", "kind", "result", "if", "verify")
+             "enabled", "kind", "label", "result", "if", "verify")
 
 
 def policy_findings(policy):
@@ -375,6 +384,9 @@ def policy_findings(policy):
     known_limits = limits(policy)
     for index, rule in enumerate(policy.get("rule", [])):
         where = "rule %s" % (rule.get("id") or "#%d" % index)
+        # Read once, at the top: the per-rule checks below branch on it, and defining it half way
+        # down meant the branches above it read an unbound name.
+        kind = str(rule.get("kind", "hard")).strip().lower()
         for key in sorted(rule):
             if key not in RULE_KEYS:
                 problems.append("%s: unknown key %r; the engine reads %s"
@@ -396,6 +408,11 @@ def policy_findings(policy):
             problems.append("%s: unknown action %r; the engine knows %s"
                             % (where, action, ", ".join(ACTION_VALUES)))
         for key in ("only_if", "unless"):
+            # A soft rule's unless is prose for the model, checked in its own branch below. Walking
+            # the string here read it one character at a time and called each character an unknown
+            # condition, which is how a well-formed rule came back as two pages of findings.
+            if kind == "soft":
+                continue
             for name in sorted(rule.get(key) or {}):
                 if name in LIMIT_CONDITIONS and rule[key][name] not in known_limits:
                     problems.append("%s: %s names %r, which is not a [limits] key"
@@ -407,16 +424,40 @@ def policy_findings(policy):
                     problems.append("%s: %s holds the unknown condition key %r; the engine reads %s"
                                     % (where, key, name, ", ".join(CONDITION_KEYS)))
         result = rule.get("result")
-        if result is not None and result not in ACTION_VALUES:
+        if kind not in ("hard", "soft"):
+            problems.append("%s: unknown kind %r; the engine knows hard, soft" % (where, kind))
+        if kind == "soft":
+            # A soft rule's logic is prose, not a verdict, so the two are checked against different
+            # vocabularies. Accepting a verdict here would let a deny rule be silently filed as a
+            # sentence nobody reads.
+            if not str(result or "").strip():
+                problems.append("%s: a soft rule needs result, the sentence to inject" % where)
+            if not comma_list((rule.get("if") or {}).get("occasion", "")):
+                problems.append("%s: a soft rule needs if.occasion; without one it matches no moment "
+                                "and reload writes nothing, so the rule is on and does nothing"
+                                % where)
+        elif result is not None and result not in ACTION_VALUES:
             problems.append("%s: unknown result %r; the engine knows %s"
                             % (where, result, ", ".join(ACTION_VALUES)))
-        kind = rule.get("kind")
-        if kind is not None and str(kind).strip().lower() not in ("hard", "soft"):
-            problems.append("%s: unknown kind %r; the engine knows hard, soft" % (where, kind))
-        for name in sorted(rule.get("if") or {}):
-            if name in FLAT_CONDITIONS or name in FLAT_VALUE_CONDITIONS or name in FLAT_FACT_KEYS:
+        for name, value in sorted((rule.get("if") or {}).items()):
+            if kind == "soft":
+                if name == "occasion":
+                    for moment in comma_list(value):
+                        if moment not in SOFT_OCCASIONS:
+                            problems.append("%s: unknown occasion %r; the engine knows %s"
+                                            % (where, moment, ", ".join(SOFT_OCCASIONS)))
+                    continue
+                problems.append("%s: a soft rule is keyed on occasion, not on %r; a soft rule fires "
+                                "at a moment in the conversation, where no tool is being called"
+                                % (where, name))
+            elif name in FLAT_CONDITIONS or name in FLAT_VALUE_CONDITIONS or name in FLAT_FACT_KEYS:
                 continue
-            problems.append("%s: rule.if holds the unknown condition %r" % (where, name))
+            else:
+                problems.append("%s: rule.if holds the unknown condition %r" % (where, name))
+        if kind == "soft" and "unless" in rule and not isinstance(rule["unless"], str):
+            problems.append("%s: a soft rule's unless is the exception in the human's own words, so "
+                            "it is a sentence, not a condition table - no code can evaluate it for "
+                            "the model" % where)
     return [("policy", text) for text in problems]
 
 
@@ -430,6 +471,142 @@ def notices_text(policy, warnings):
     if not notices:
         return ""
     return "\n" + "\n".join("OCF [%s] %s" % (kind, text) for kind, text in notices)
+
+
+# ---------------------------------------------------------------------------
+# Generated instructions
+# ---------------------------------------------------------------------------
+#
+# The other half of the rule set. A hard rule is read by this program, outside the conversation, and
+# its answer is a verdict. A soft rule cannot be enforced that way - nothing can check whether a
+# sentence was written - so it is written INTO the file the model reads on every turn, in the part of
+# it marked off below. That is the whole mechanism: the human edits a rule in policy.toml, runs
+# `reload`, and the text in front of the model changes. The file is protected from the machine, so the
+# model cannot edit the rules it is being asked to follow.
+
+INSTRUCTIONS_REL = ".github/copilot-instructions.md"
+INSTRUCTIONS_BEGIN = "<!-- OCF:GENERATED -->"
+INSTRUCTIONS_END = "<!-- OCF:END -->"
+
+
+def soft_rules(policy):
+    return [rule for rule in policy.get("rule", [])
+            if str(rule.get("kind", "hard")).strip().lower() == "soft"]
+
+
+def one_line(text):
+    """Collapse a rule's text onto one line, telling a wrap apart from a space the human wrote.
+
+    Two different things look alike in a multi-line TOML string. A bare line break is where the human
+    wrapped the source, so joining on a space put one inside a clause that has no spaces in it at all -
+    which is every clause in Chinese. Whitespace the human added beyond the break is deliberate, and
+    dropping it ran Latin words into the characters around them. So: a bare line break joins, unless
+    both sides are ASCII word characters, and any indent or trailing space is kept as one space - which
+    is how a path on its own line ends up separated from the word before it.
+    """
+    parts = [part for part in re.split(r"(\s+)", str(text)) if part]
+    out = ""
+    for index, part in enumerate(parts):
+        if part.isspace():
+            leftover = part.replace("\r", "").replace("\n", "")
+            if "\n" not in part and "\r" not in part:
+                out += " "
+                continue
+            if leftover:
+                out += " "
+                continue
+            following = parts[index + 1] if index + 1 < len(parts) else ""
+            if out and out[-1].isascii() and out[-1].isalnum() \
+                    and following[:1].isascii() and following[:1].isalnum():
+                out += " "
+            continue
+        out += part
+    return out.strip()
+
+
+def render_instructions(policy):
+    """Render the generated block. Pure: same policy in, same text out, so it can be compared."""
+    lines = [INSTRUCTIONS_BEGIN,
+             "<!-- Written by `python .github/ocf/ocf.py reload` from the soft rules in",
+             "     .github/ocf/policy.toml. Do not edit by hand - the next reload overwrites it.",
+             "     Edit the rules in that file and run reload. -->",
+             "",
+             "## Command vocabulary",
+             "",
+             "Generated from the same table the program dispatches on, so this list cannot drift "
+             "away from what the entry point actually accepts.",
+             ""]
+    for side, groups in (("agent", TRANSITIONS["commands"]["agent"]),
+                         ("human", TRANSITIONS["commands"]["human"])):
+        indent = " " * len("human: ")
+        for index, group in enumerate(groups):
+            lines.append("%s%s%s" % (side + ": " if index == 0 else indent,
+                                      "" if index == 0 else "", " | ".join(group)))
+    lines += ["",
+              "A human-only command is refused even if the human asks you in the conversation to run "
+              "it. \"The human already said yes\" is not approval; approval is the human running the "
+              "command in their own terminal. If they want it to stop, they turn the rule off or edit "
+              "the config - they do not authorise it by asking.",
+              "",
+              "## Soft rules",
+              "",
+              "No hook can enforce these: nothing can check whether a sentence was written. They are "
+              "put in front of you instead. Each one names the moment it applies to.",
+              ""]
+    rules = soft_rules(policy)
+    written = 0
+    for occasion in SOFT_OCCASIONS:
+        group = [rule for rule in rules
+                 if as_bool(rule.get("enabled", True))
+                 and occasion in comma_list((rule.get("if") or {}).get("occasion", ""))]
+        if not group:
+            continue
+        lines.append("### %s" % occasion)
+        lines.append("")
+        for rule in group:
+            label = str(rule.get("label") or rule.get("id") or "rule").strip()
+            lines.append("- **%s** - %s" % (label, one_line(rule.get("result", ""))))
+            exception = rule.get("unless")
+            if isinstance(exception, str) and exception.strip():
+                lines.append("  - Exception, judged by you: %s" % one_line(exception))
+        lines.append("")
+        written += len(group)
+    if not written:
+        lines += ["No soft rule is switched on, so there is nothing to say here.", ""]
+    lines.append(INSTRUCTIONS_END)
+    return "\n".join(lines)
+
+
+def write_instructions(root, policy):
+    """Replace the marked block in place, or append it when the file has none.
+
+    Everything outside the markers is the human's own prose and is left alone, which is the only
+    reason a generated block can live in a hand-written file. A file that has lost one of the two
+    markers is left untouched and reported: guessing where a half-deleted block used to end would
+    silently eat whatever followed it.
+    """
+    path = os.path.join(root, INSTRUCTIONS_REL)
+    text = read_text(path)
+    if text is None:
+        raise OcfError("policy", "%s does not exist" % INSTRUCTIONS_REL)
+    block = render_instructions(policy)
+    start = text.find(INSTRUCTIONS_BEGIN)
+    if start < 0:
+        if text.find(INSTRUCTIONS_END) >= 0:
+            raise OcfError("policy", "%s has the end marker but not the begin marker; refusing to "
+                                     "guess where the generated block starts" % INSTRUCTIONS_REL)
+        write_text(path, text.rstrip("\n") + "\n\n" + block + "\n")
+        return "appended the generated block to %s" % INSTRUCTIONS_REL
+    end = text.find(INSTRUCTIONS_END, start)
+    if end < 0:
+        raise OcfError("policy", "%s has the begin marker but not the end marker; refusing to guess "
+                                 "where the generated block stops" % INSTRUCTIONS_REL)
+    end += len(INSTRUCTIONS_END)
+    updated = text[:start] + block + text[end:]
+    if updated == text:
+        return "%s already matches the policy" % INSTRUCTIONS_REL
+    write_text(path, updated)
+    return "rewrote the generated block in %s" % INSTRUCTIONS_REL
 
 
 # ---------------------------------------------------------------------------
@@ -1042,6 +1219,11 @@ def evaluate_rule(context, rule):
     uses, because editing the two in sequence - code first, policy second - is exactly how the gate
     locked itself out on itself once already.
     """
+    # A soft rule is not gated here at all, in either shape. Checked before the shape dispatch so a
+    # soft rule can never be read as a verdict by the older path - one sentence of prose is not an
+    # `action`, and defaulting it would turn "explain your terms" into "deny".
+    if str(rule.get("kind", "hard")).strip().lower() == "soft":
+        return None
     if "if" in rule or "result" in rule:
         return evaluate_rule_v2(context, rule)
     targets = rule.get("on", "any")
@@ -1796,6 +1978,31 @@ def update_list(root, path, add):
     return 0
 
 
+def cmd_reload(root, policy, args):
+    """Re-read the configuration and make the parts that are generated match it. Human-only.
+
+    Refusing to write anything when the policy is broken is the point: half-applied configuration is
+    worse than none, because the file the model reads would then disagree with the rules the gate
+    enforces and neither one would say so. Nothing is touched until the whole file has been checked.
+    """
+    _, warnings = load_policy(root)
+    findings = list(warnings) + policy_findings(policy)
+    for kind, text in findings:
+        out("[%s] %s" % (kind, text))
+    if findings:
+        out("refusing to reload: the policy did not load cleanly, so nothing was changed")
+        return 1
+    out(write_instructions(root, policy))
+    rules = soft_rules(policy)
+    on = [rule for rule in rules if as_bool(rule.get("enabled", True))]
+    out("soft rules: %d of %d switched on" % (len(on), len(rules)))
+    out("hooks: unchanged by reload. Hook wiring is not configuration yet, so changing it means "
+        "editing .github/hooks/orchestrator.json and reloading the VS Code window - hooks are read "
+        "when the window starts and are not re-read afterwards.")
+    journal(root, policy, read_state(root, policy), "reload: configuration re-read")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Entry
 # ---------------------------------------------------------------------------
@@ -1816,6 +2023,7 @@ COMMAND_HANDLERS = {
     "approve": cmd_approve,
     "reject": cmd_reject,
     "confirm": cmd_confirm,
+    "reload": cmd_reload,
     "allow": lambda root, policy, args: update_list(root, args[0] if args else "", False),
     "deny": lambda root, policy, args: update_list(root, args[0] if args else "", True),
     "human-code": lambda root, policy, args: update_list(root, args[0] if args else "", True),
@@ -1827,20 +2035,22 @@ def render_usage():
 
     Written out instead of typed a second time: a usage line that names a command the dispatcher does
     not have, or an advance target the machine does not accept, is a lie the human reads first.
+
+    One line per group, assembled rather than interpolated into a fixed template: a template with a
+    hardcoded number of `%s` breaks the moment a group is added, and it broke here - the whole program
+    failed to start, which for a gate means no gate at all rather than a wrong line of help text.
     """
     fragments = dict(TRANSITIONS["usage"])
     fragments["advance"] = fragments["advance"] % "|".join(TRANSITIONS["agent_targets"])
-    lines = [" | ".join(fragments[name] for name in group)
-             for side in ("agent", "human") for group in TRANSITIONS["commands"][side]]
-    return """OCF - orchestrator control flow
-
-agent:  %s
-        %s
-human:  %s
-        %s
-
-The hook entry is: ocf.py hook   (reads the event JSON on stdin)
-""" % tuple(lines)
+    lines = ["OCF - orchestrator control flow", ""]
+    indent = " " * len("human: ")
+    for side in ("agent", "human"):
+        for index, group in enumerate(TRANSITIONS["commands"][side]):
+            lines.append("%s%s%s" % (side + ": " if index == 0 else indent,
+                                     "" if index == 0 else "",
+                                     " | ".join(fragments[name] for name in group)))
+    lines += ["", "The hook entry is: ocf.py hook   (reads the event JSON on stdin)", ""]
+    return "\n".join(lines)
 
 
 USAGE = render_usage()

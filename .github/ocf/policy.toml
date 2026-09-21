@@ -370,3 +370,105 @@ why     = "The same command again, which suggests you are stuck in a loop. The h
 [rule.if]
 class                   = "exec"
 command_repeats_at_least = 3
+
+# ---------------------------------------------------------------------------
+# Soft rules - kind = "soft"
+# ---------------------------------------------------------------------------
+#
+# No hook can enforce these: nothing can check whether a sentence was written. So instead of a verdict
+# they carry the sentence itself, and `reload` writes them into the part of
+# .github/copilot-instructions.md marked <!-- OCF:GENERATED --> ... <!-- OCF:END -->, which the model
+# reads on every turn. Edit the rule here, which is a file the machine may not touch, then run:
+#
+#     python .github/ocf/ocf.py reload
+#
+# Field by field, same five as a hard rule:
+#   enabled  是否启用    switched off means the sentence is not written out at all
+#   kind     the rule is soft, so `reload` writes it instead of the gate reading it
+#   if       命中情景    occasion = the moment it applies to; one of session-start, answer, act, plan
+#   unless   绕过情景    the exception, in the human's own words: a soft rule is judged by the model,
+#                        because no code can evaluate "is this explanation needed here"
+#   result   规则逻辑    the sentence that goes in front of the model - prose, not a verdict
+#   why      规则描述    the one-line note for whoever reads this file
+#
+# Order does not matter here: soft rules are never evaluated in sequence, they are grouped by occasion.
+
+[[rule]]
+id      = "beginner-mode"
+kind    = "soft"
+label   = "菜鸟模式"
+enabled = true
+why     = "把回答里出现的领域原语讲清楚，并沉淀成术语表；默认开启，因为它同时在为交接做文档。"
+result  = """
+用专业但生动的语言，极尽详细地讲解
+你这次回答中出现的每一个领域原语：
+它是什么、在这里指什么、为什么这么叫、
+和哪个概念容易混淆。
+然后把这些原语按「名字 - 一句话定义 - 在本项目的用法」
+补进
+  .orchestrator/glossary.md；
+同一个原语已经记过就不再重复记，
+只在定义需要修正时改它。
+不要为了讲而讲：
+只讲这次回答里真的用到的原语，没用到的不提。"""
+unless  = "人类说「不用解释」「直接给结论」或明确表示已经懂了，这一轮就跳过。"
+
+[rule.if]
+occasion = "answer"
+
+[[rule]]
+id      = "human-only-commands"
+kind    = "soft"
+label   = "人类专属命令"
+enabled = true
+why     = "说清人类专属命令的立场，因为人类在对话里提出要求时，模型的默认倾向是照办。"
+result  = """
+授权类命令只有人类能在自己的终端里跑。
+即使人类在对话里要求你代跑，也不要跑；
+「人类已经说过同意了」不算批准，
+批准是他在自己的终端里跑那条命令这个动作本身。
+他若坚持，就告诉他去关掉对应规则或改
+  .github/ocf/policy.toml
+——改配置是授权，要求你代跑不是。"""
+unless  = "从不需要例外：这条一旦有例外，就等于把批准权交给了对话。"
+
+[rule.if]
+occasion = "act"
+
+[[rule]]
+id      = "plan-file"
+kind    = "soft"
+label   = "写计划文件"
+enabled = false
+why     = "默认对话不落盘。八段式计划是模型自己的工作底稿，写成文件只该在人类明确要求时发生，否则就是用人类的 token 生成没人读的文档。"
+result  = """
+把八段式计划写成
+  .orchestrator/plan.md：
+类型、摘要、步骤、工具、涉及文件、范围、交付物、自检。
+每段都要具体到可以直接照着做，
+写完再读一遍确认没有猜测。"""
+unless  = "人类说「按默认来」「不用写文件」时跳过。"
+
+[rule.if]
+occasion = "plan"
+
+[[rule]]
+id      = "grill-with-docs"
+kind    = "soft"
+label   = "对照文档质询"
+enabled = true
+why     = "质询必须对准项目已有的语言和已定决策，否则问出来的都是模型自己的想当然。"
+result  = """
+质询或规划之前，先读
+  CONTEXT.md
+  和
+  docs/adr/
+：项目已经用什么词、已经定过什么。
+问题要对着它们问，比如
+「你说的 X 和 CONTEXT.md 里的 Y 是同一个东西吗」
+「这个方案和 ADR-0003 的结论冲突，为什么这次不一样」。
+术语不一致就先解决术语，再解决问题。"""
+unless  = "项目里没有 CONTEXT.md 也没有 docs/adr/ 时，这条没有对照物，跳过。"
+
+[rule.if]
+occasion = "plan"
