@@ -223,9 +223,10 @@ approval, the orchestrator's own files are protected, and writing a human-only s
 executable file is refused. `system.enabled = false` hands control back: it skips the approval
 requirement and lets the machine edit gate code, while human-code protection still applies. The policy
 file is self-protected, so the machine cannot turn it off itself, and an unreadable or malformed
-policy keeps the gate on by falling back to a policy that denies everything except the always-allowed
-tools. A missing policy file also reports itself as a policy finding from `selftest`, never as
-silence.
+policy keeps the gate on by falling back to a policy that denies every change while still allowing
+reading and the always-allowed tools. That last part matters: a gate that refuses to let anyone read it
+is a gate nobody can repair, and a one-character typo once denied even `read_file`. A missing policy
+file also reports itself as a policy finding from `selftest`, never as silence.
 
 Length is counted in characters, once, on every platform, because there is only one implementation.
 
@@ -269,5 +270,8 @@ while the level is still autopilot, because the triggering condition is an OR.
   auto-approve past it; a hook answering `ask` also looks protected, by an explicit branch that
   discards pre-approval when the decision is `ask`. That branch is read from the editor bundle rather
   than verified end to end, so treat `ask` as a hint and put anything that must hold behind `deny`.
+- Reading is never gated, which is what keeps a broken gate diagnosable. The strict fallback refuses
+  every change and still allows reading and the always-allowed tools; the read-only list is what makes
+  that true, so removing an entry from it removes a recovery path.
 - Inline agent hooks would scope enforcement to one agent, but they need the chat.useCustomAgentHooks
   setting, and if it is off the gate silently stops working, so the workspace hook stays the default.

@@ -164,7 +164,7 @@
       "tool_input": { "filePath": "src/app.py", "startLine": 1, "endLine": 10 }
     },
     "expect": "allow",
-    "expect_rule": "default"
+    "expect_rule": "read-only"
   },
   {
     "id": "plain-command-needs-approval",
@@ -409,5 +409,29 @@
       "tool_response": "File created"
     },
     "expect_silent": true
+  },
+  {
+    "id": "no-policy-still-allows-reading",
+    "why": "Regression for a live lockout: a one-character policy typo made the strict fallback deny read_file as well, so the agent could neither see the file nor help repair it. Denying every change is the point; denying reading protects nothing and blinds everyone.",
+    "policy": "broken",
+    "state": "executing",
+    "payload": {
+      "tool_name": "read_file",
+      "tool_input": { "filePath": "src/app.py", "startLine": 1, "endLine": 5 }
+    },
+    "expect": "allow",
+    "expect_rule": "read-only"
+  },
+  {
+    "id": "no-policy-still-allows-thinking-tools",
+    "why": "The strict fallback must keep the always-allowed tools, or a broken policy removes any way to record or reason about the problem.",
+    "policy": "broken",
+    "state": "executing",
+    "payload": {
+      "tool_name": "manage_todo_list",
+      "tool_input": { "todoList": [] }
+    },
+    "expect": "allow",
+    "expect_rule": "always-allowed"
   }
 ]

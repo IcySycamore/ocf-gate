@@ -124,6 +124,21 @@ visual = [
 # Neither read-only nor dangerous; never escalated, including by the unknown-tool rule.
 always_allow = ["runSubagent", "manage_todo_list", "vscode_askQuestions", "memory"]
 
+# Read-only tools, allowed unconditionally. This list is what keeps the strict fallback policy usable:
+# a broken policy file must deny every change, but denying reading as well leaves the agent blind and
+# unable to help find the typo. `visual` is classified before this list on purpose, so view_image stays
+# denied even though it only reads.
+read_only = [
+  "read_file",
+  "grep_search",
+  "file_search",
+  "list_dir",
+  "get_errors",
+  "copilot_getNotebookSummary",
+  "read_notebook_cell_output",
+  "vscode_listCodeUsages",
+]
+
 # Where each tool keeps its payload. A dotted path descends into nested objects, which is what fixes
 # the class of bug where a command hidden at task.command was never inspected.
 [tools.field]

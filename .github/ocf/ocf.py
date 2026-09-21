@@ -189,15 +189,30 @@ DEFAULT_POLICY = {
         "exec": [],
         "action": [],
         "visual": [],
-        "always_allow": [],
+        # These two carry real defaults, because the strict fallback policy is built from this block.
+        # Denying every change is the point of a fail-safe; denying reading as well protects nothing
+        # and turns a one-character policy typo into a total lockout that the agent cannot even help
+        # diagnose. See REFACTOR-DESIGN.md section 14.
+        "always_allow": ["runSubagent", "manage_todo_list", "vscode_askQuestions", "memory"],
+        "read_only": [
+            "read_file",
+            "grep_search",
+            "file_search",
+            "list_dir",
+            "get_errors",
+            "copilot_getNotebookSummary",
+            "read_notebook_cell_output",
+            "vscode_listCodeUsages",
+        ],
         "field": {"default": ["command", "code"]},
     },
     "selftest": {"canary": []},
     "rule": [],
 }
 
-# The strictest thing that still lets the human work. Used when the policy cannot be read at all, so
-# that "policy is broken" can never mean "gate is open".
+# The strictest thing that still lets work continue. Used when the policy cannot be read at all, so
+# that "policy is broken" can never mean "gate is open". It denies every change while leaving reading
+# and the always-allowed tools open: the gate must be able to refuse work, not to blind everyone.
 STRICT_POLICY = json.loads(json.dumps(DEFAULT_POLICY))
 STRICT_POLICY["rule"] = [
     {
@@ -206,8 +221,9 @@ STRICT_POLICY["rule"] = [
         "surface": "any",
         "match": ".*",
         "action": "deny",
-        "why": "No usable policy file was found, so the strict fallback policy is in force. "
-               "Restore .github/ocf/policy.toml.",
+        "why": "No usable policy file was found, so the strict fallback policy is in force. Reading "
+               "and the always-allowed tools still work, so the reason can be diagnosed. Restore "
+               ".github/ocf/policy.toml.",
     }
 ]
 
@@ -237,8 +253,9 @@ def load_policy(root):
         data = tomllib.loads(text)
     except Exception as exc:
         return (dict(STRICT_POLICY), [
-            ("policy", "%s failed to parse: %s. The strict fallback policy is in force, which "
-                       "denies everything except the always-allowed tools." % (POLICY_REL, exc))])
+            ("policy", "%s failed to parse: %s. The strict fallback policy is in force, which denies "
+                       "every change and allows only reading and the always-allowed tools."
+                       % (POLICY_REL, exc))])
     return (deep_merge(DEFAULT_POLICY, data), [])
 
 
@@ -572,7 +589,7 @@ def write_targets(root, command):
 # Tool classification
 # ---------------------------------------------------------------------------
 
-CLASS_ORDER = ("visual", "always_allow", "edit", "exec", "action")
+CLASS_ORDER = ("visual", "always_allow", "read_only", "edit", "exec", "action")
 
 
 def tool_class(policy, tool):
@@ -772,6 +789,11 @@ def decide(context):
     if context.klass == "always_allow":
         return ("allow", "always-allowed",
                 "[always-allowed] This tool is always allowed.")
+    if context.klass == "read_only":
+        return ("allow", "read-only",
+                "[read-only] This tool only reads, so no rule applies to it. Reading stays open even "
+                "under the strict fallback policy, because a gate that cannot be read is a gate nobody "
+                "can repair.")
     for rule in context.policy.get("rule", []):
         fired = evaluate_rule(context, rule)
         if fired:

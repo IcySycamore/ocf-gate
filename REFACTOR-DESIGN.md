@@ -333,7 +333,6 @@ Auto-copilot 模式下，agent 调 `vscode_askQuestions` 后收到一条**自动
 **在信号被测定之前不落地任何依赖它的规则** —— 否则失败方向会是“把 agent 锁死”，那是我们一路在避免的另一类事故。
 
 ### 事后查明：这条“自动回复”是编辑器自己注入的，而且可以关（2026-09-21）
-
 在 VS Code 核心包（`workbench.desktop.main.js`）里找到：
 
      if (info?.permissionLevel === "autopilot" || configService.getValue("chat.autoReply")) {
@@ -357,3 +356,27 @@ best aligned with the context..."`。机制是：提问会建立 `pendingQuestio
 `approve` 写入，聊天消息无论来自谁都不能改变状态。但**另一个口子存在**：`UserPromptSubmit` 会清除
 `must_consult`。若自动回复也能触发它，那么自动回复不仅能骗过 agent，还能**解开失败预算锁**。
 同一病灶、低一级严重度，修法与 D 同时生效。
+
+---
+
+## 14. 架构审查：门禁自身的可恢复性（2026-09-21）
+
+起因是一次真实活锁：人类手改 `policy.toml` 时写坏了一个字符，门禁落入严格兜底，
+**随后每一条工具调用都被拒绝 —— 包括 `read_file`**。agent 只剩"读不到任何东西"的处境，
+连自己错在哪都无法查明，连一条笔记都记不下来。
+
+| # | 问题 | 状态 |
+| --- | --- | --- |
+| 1 | 严格兜底**连 always-allow 都拒绝**，而 `policy.toml` 的注释声称"除 always-allow 外一律拒绝" —— 说明与实现不符（实现里 `DEFAULT_POLICY["tools"]["always_allow"]` 是空列表） | ✅ 已修：`always_allow` 与 `read_only` 现在在 `DEFAULT_POLICY` 里带真实默认值，兜底策略由它们构成 |
+| 2 | fail-safe 把"不许动手"与"不许读"混为一谈 | ✅ 已修：新增 `read_only` 工具类，读**无条件**放行；`visual` 分类排在该类之前，所以 `view_image` 仍被拒 |
+| 3 | README 的自救路径在**唯一需要它的时候不可用**（"把 `system.enabled` 设为 false" 需要编辑的正是那个坏掉的文件） | ✅ 已修：自救路径改为按顺序可执行的三步（git 恢复 / 自检报出语法原因 / 停用 hooks） |
+| 4 | 兜底策略是唯一入口，一个字符的错误升级成"整套系统不可用" | ✅ 由 1、2 缓解：读与思考类仍可用，agent 因此能帮人定位 |
+
+**这次审查的结论**：最脆弱的不是判定逻辑（22 条规则、33 条用例守着），而是**门禁自身的可恢复性**。
+一条通用判据：**fail-safe 的语义必须是"拒绝动手"，不能是"拒绝一切"** ——
+后者会把一次配置失误放大成第二重故障，而且把人类也一起拖进盲区。
+
+新增回归：`no-policy-still-allows-reading`、`no-policy-still-allows-thinking-tools` 两条用例，
+并把 `read_file` 的期望从 `default` 改为 `read-only`，使"读永不被拦"成为被断言的不变量。
+
+同时交付 [`POLICY-GUIDE.md`](POLICY-GUIDE.md)：人类面向的策略配置说明与指南（字段、谓词、22 条规则、配方、验证方式）。
