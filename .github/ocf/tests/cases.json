@@ -134,6 +134,19 @@
     "expect_rule": "human-only-subcommand"
   },
   {
+    "id": "reload-is-human-only",
+    "why": "reload rewrites the instructions the model reads, so an agent able to run it could edit its own rules. It is derived from the human side of the command table rather than from a second list here, so this case also pins that the new command landed on the human side.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": {
+        "command": "python .github/ocf/ocf.py reload"
+      }
+    },
+    "expect": "deny",
+    "expect_rule": "human-only-subcommand"
+  },
+  {
     "id": "human-only-word-inside-a-filename-is-not-a-call",
     "why": "The rule reads the subcommand - the argument after the entry script - not the words anywhere in the text. Matching text anywhere denied an ordinary cleanup because a FILE was named human-code-list.md, which is the same defect class as judging an allow rule off a path that merely appears in a command.",
     "state": "executing",
