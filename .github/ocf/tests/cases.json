@@ -148,12 +148,12 @@
   },
   {
     "id": "human-only-word-inside-a-filename-is-not-a-call",
-    "why": "The rule reads the subcommand - the argument after the entry script - not the words anywhere in the text. Matching text anywhere denied an ordinary cleanup because a FILE was named human-code-list.md, which is the same defect class as judging an allow rule off a path that merely appears in a command.",
+    "why": "The rule reads the subcommand - the argument after the entry script - not the words anywhere in the text. Matching text anywhere denied an ordinary cleanup because a FILE happened to be named like a subcommand, which is the same defect class as judging an allow rule off a path that merely appears in a command.",
     "state": "executing",
     "payload": {
       "tool_name": "run_in_terminal",
       "tool_input": {
-        "command": "Remove-Item docs/human-code-list.md"
+        "command": "Remove-Item docs/deny-list.md"
       }
     },
     "expect": "allow",

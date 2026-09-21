@@ -29,7 +29,8 @@ Agent: status, set, gate, journal, fail, ok, init, selftest. advance targets are
 planning, reporting, ready, blocked. set refuses approved_by and must_consult, and grill_rounds is
 counted by the hook so it refuses that too.
 
-Human terminal only: approve, reject, confirm, allow, deny, human-code, reload. `reload` re-reads the
+Human terminal only: approve, reject, confirm, allow, deny, reload. `allow` and `deny` add and remove one
+path on the protected list; there is no second list and no exemption file. `reload` re-reads the
 configuration and regenerates the two files built from it - the standing contract and the hook wiring -
 so an agent able to run it could edit the rules it is being asked to follow.
 

@@ -740,6 +740,19 @@ def test_soft_rules_never_gate():
     check_soft_rules_never_gate()
 
 
+def _first_difference(written, rendered):
+    """Name the first line that differs, so the message points at the change instead of describing it.
+
+    "The block no longer matches" is true and useless: the cause may be a soft rule, the command table
+    or the state table, and all three look alike from a byte comparison.
+    """
+    for index, (left, right) in enumerate(zip(written.splitlines(), rendered.splitlines())):
+        if left != right:
+            return "line %d: on disk %r, rendered %r" % (index + 1, left[:90], right[:90])
+    return "the line counts differ: on disk %d, rendered %d" % (len(written.splitlines()),
+                                                               len(rendered.splitlines()))
+
+
 def check_generated_instructions():
     """The written block must equal what the policy renders, and half a block must be refused.
 
@@ -799,9 +812,10 @@ def check_generated_instructions():
     start = text.index(ocf.INSTRUCTIONS_BEGIN)
     end = text.index(ocf.INSTRUCTIONS_END, start) + len(ocf.INSTRUCTIONS_END)
     assert text[start:end] == block, (
-        "the generated block in %s no longer matches the soft rules in policy.toml, so the model is "
-        "reading a rule the human has already changed. Run `python .github/ocf/ocf.py reload`."
-        % ocf.INSTRUCTIONS_REL)
+        "the generated block in %s no longer matches what the policy renders, so the model is reading "
+        "a contract the human has already changed - the soft rules, or the command table, or the state "
+        "table. Run `python .github/ocf/ocf.py reload` in your own terminal. First difference: %r"
+        % (ocf.INSTRUCTIONS_REL, _first_difference(text[start:end], block)))
 
 
 def test_generated_instructions():

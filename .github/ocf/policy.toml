@@ -232,7 +232,7 @@ surface = "path"
 match = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
 when = "enforced"
 action = "deny"
-only_if = { content_matches = '(?i)ocf\.(py|ps1|sh).{0,300}?(approve|reject|confirm|allow|deny|human-code)' }
+only_if = { content_matches = '(?i)ocf\.(py|ps1|sh).{0,300}?(approve|reject|confirm|allow|deny|reload)' }
 why = "Writing a human-only subcommand into an executable file is self-authorization."
 
 # The orchestrator's own files. Includes the rules document, because a rules document the machine can

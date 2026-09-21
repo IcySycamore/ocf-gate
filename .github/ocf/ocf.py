@@ -66,7 +66,7 @@ TRANSITIONS = {
         "agent": (("status", "set", "gate", "journal", "fail", "ok"),
                   ("advance", "init", "selftest")),
         "human": (("approve", "reject", "confirm"),
-                  ("allow", "deny", "human-code"),
+                  ("allow", "deny"),
                   ("reload",)),
     },
     "usage": {
@@ -85,7 +85,6 @@ TRANSITIONS = {
         "confirm": "confirm",
         "allow": "allow <path>",
         "deny": "deny <path>",
-        "human-code": "human-code <path>",
     },
 }
 
@@ -2147,7 +2146,6 @@ COMMAND_HANDLERS = {
     "reload": cmd_reload,
     "allow": lambda root, policy, args: update_list(root, args[0] if args else "", False),
     "deny": lambda root, policy, args: update_list(root, args[0] if args else "", True),
-    "human-code": lambda root, policy, args: update_list(root, args[0] if args else "", True),
 }
 
 
