@@ -9,9 +9,10 @@ shorthand for `python .github/ocf/ocf.py <cmd>`.
 
 1. Run status. Once `gate grill-valid` passes, advance planning, which runs the entry gates context,
    docs-decision and grill-valid.
-2. Write .orchestrator/plan.md with all 8 sections. Files must name the exact paths to change, because
-   human-code-clear compares them against human-code.txt; on a collision ask the human to allow the
-   path.
+2. Write .orchestrator/plan.md on the template at `.github/assets/plan-template.md`: all 8 sections,
+   with the headings spelled exactly as the template spells them. Files must name the exact paths to
+   change, because human-code-clear compares them against human-code.txt; on a collision ask the human
+   to allow the path.
 3. Dispatch the plan-auditor subagent for an independent review; never audit your own plan. It returns
    the schema result and the P0 list, each item with a verifiable criterion and a repair direction.
 4. Any P0 means revise and re-audit until there are none. Only then set p0_count from the auditor's

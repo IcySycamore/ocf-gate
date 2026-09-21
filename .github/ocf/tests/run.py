@@ -411,8 +411,37 @@ def test_repo_is_ascii():
     assert not offenders, "non-ASCII bytes in: %s" % ", ".join(offenders)
 
 
+def check_plan_template():
+    """The template the plan is written on must satisfy the schema that will judge the plan.
+
+    These two drifted apart once already: the template's headings were Chinese while PLAN_HEADINGS
+    matched English literals, so the human's own template would have failed plan-schema. Nothing
+    noticed, because nothing read the template. This reads it.
+    """
+    ocf = load_ocf_module()
+    path = os.path.join(REPO, ".github", "assets", "plan-template.md")
+    assert os.path.exists(path), "the plan template is missing: %s" % path
+    with open(path, "r", encoding="utf-8") as handle:
+        sections = ocf.plan_sections(handle.read())
+    missing = [name for name in ocf.PLAN_HEADINGS if name not in sections]
+    empty = [name for name in ocf.PLAN_HEADINGS
+             if name in sections and not "".join(sections[name]).strip()]
+    problems = []
+    if missing:
+        problems.append("missing headings: %s" % ", ".join("## " + item for item in missing))
+    if empty:
+        problems.append("empty headings: %s" % ", ".join("## " + item for item in empty))
+    assert not problems, ("a template that fails the schema it exists to satisfy teaches the wrong "
+                          "shape: %s" % "; ".join(problems))
+
+
+def test_plan_template():
+    check_plan_template()
+
+
 CHECKS = (
     ("repo-ascii", test_repo_is_ascii),
+    ("plan-template", test_plan_template),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),

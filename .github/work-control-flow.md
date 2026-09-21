@@ -140,12 +140,16 @@ You make that judgement yourself; the system does no keyword matching.
 
 ## 6. Planning and approval
 
-plan.md carries 8 sections, each matched by plan-schema:
+plan.md carries 8 sections, each matched by plan-schema, and it is written on the template at
+`.github/assets/plan-template.md`:
 
     ## Type  ## Summary  ## Steps  ## Tools  ## Files  ## Scope  ## Deliverables  ## Self-review
 
 Type is refactor, feature, fix, docs, chore or test. Files names the exact paths to change, because
-human-code-clear compares them against human-code.txt.
+human-code-clear compares them against human-code.txt. The report has its own template at
+`.github/assets/report-template.md`. Both template files are in English and the headings stay in English,
+because plan-schema matches them literally; the agent fills every other line in the language the human is
+using.
 
 P0 causes rework, breaks human code or data, bypasses an approval gate, or misses the goal, and must
 reach zero. P1 makes implementation stumble and goes in the risk report. P2 is style.
