@@ -590,12 +590,80 @@ def test_gated_transitions():
     check_gated_transitions()
 
 
+PROBE_POLICY = """\
+[[rule]]
+id = "probe-long-command"
+enabled = true
+result = "deny"
+why = "too long for the probe"
+
+[rule.if]
+class = "exec"
+command_length_over = 10
+
+[[rule]]
+id = "probe-default"
+enabled = true
+result = "allow"
+why = "short enough for the probe"
+
+[rule.if]
+class = "exec"
+"""
+
+
+def check_new_rule_shape():
+    """The newer rule shape (one condition block, one result) must decide on its own.
+
+    Nothing in the shipped policy uses it yet, so without this the code would stay unverified until the
+    policy is converted - and "unverified until later" is how a silent failure gets in. The probe drives
+    the real hook entry point, so it also proves the dispatch from evaluate_rule actually happens.
+    """
+    root = tempfile.mkdtemp(prefix="ocf-newshape-")
+    try:
+        os.makedirs(os.path.join(root, ".github", "ocf"))
+        os.makedirs(os.path.join(root, ".orchestrator"))
+        with open(os.path.join(root, ".github", "ocf", "policy.toml"), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write(PROBE_POLICY)
+        with open(os.path.join(root, ".orchestrator", "state"), "w", encoding="utf-8") as handle:
+            handle.write("asking\n")
+        env = dict(os.environ)
+        env["OCF_ROOT"] = root
+
+        def verdict(command):
+            payload = {"hook_event_name": "PreToolUse", "session_id": "abcdef1234567890",
+                       "tool_name": "run_in_terminal", "tool_input": {"command": command}}
+            proc = subprocess.run([sys.executable, ENTRY, "hook"],
+                                  input=json.dumps(payload).encode("utf-8"),
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+            out = json.loads(proc.stdout.decode("utf-8", "replace"))
+            return out["hookSpecificOutput"]["permissionDecision"], \
+                out["hookSpecificOutput"]["permissionDecisionReason"]
+
+        decision, reason = verdict("echo one two three")
+        assert decision == "deny", "the new shape did not deny: %r" % decision
+        assert "too long for the probe" in reason, (
+            "the denial did not come from the new-shaped rule, so it may have been the fail-safe; "
+            "reason: %r" % reason[:200])
+        decision, reason = verdict("echo")
+        assert decision == "allow", "the new shape did not fall through to its own default: %r" % decision
+        assert "short enough for the probe" in reason, "wrong rule answered: %r" % reason[:200]
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_new_rule_shape():
+    check_new_rule_shape()
+
+
 CHECKS = (
     ("repo-ascii", test_repo_is_ascii),
     ("plan-template", test_plan_template),
     ("policy-vocabulary", test_policy_vocabulary),
     ("transition-table", test_transition_table),
     ("gated-transitions", test_gated_transitions),
+    ("new-rule-shape", test_new_rule_shape),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),

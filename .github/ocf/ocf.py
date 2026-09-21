@@ -884,6 +884,98 @@ def filter_condition(context, condition, values, keep):
     return survivors
 
 
+# ---------------------------------------------------------------------------
+# The newer rule shape: one condition block, one result
+# ---------------------------------------------------------------------------
+#
+# A rule reads as one sentence: when every condition in [rule.if] holds, do `result`. There is no
+# second layer - no on/when/surface/match chain, no hit/skip split, no unless wrapper - because "when
+# it must not fire" is just another condition, named so that it reads that way.
+#
+# No condition needs a `surface` field either. One action carries several pieces of text (the tool
+# name, the command, every path it touches, the content it would write), so each condition names the
+# piece it measures: the command_* conditions measure the command, the path_* conditions the paths.
+
+# The protected list is a fixed file, not a per-rule path: a rule that names the list it checks would
+# let the list be moved out from under it.
+PROTECTED_LIST_REL = ".orchestrator/protected.txt"
+
+
+def comma_list(value):
+    return [item.strip() for item in str(value).split(",") if item.strip()]
+
+
+def as_bool(value):
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("true", "yes", "1", "on")
+
+
+# Judged once for the whole call.
+FLAT_CONDITIONS = {
+    "class": lambda context, value: context.effective in comma_list(value),
+    "state": lambda context, value: context.state in comma_list(value),
+    "tool": lambda context, value: context.tool in comma_list(value),
+    "command_matches": lambda context, value:
+        bool(context.command) and re.search(value, context.command, re.I | re.S) is not None,
+    "command_length_over": lambda context, value: len(context.command) > int(value),
+    "command_statements_over": lambda context, value: len(statements(context.command)) > int(value),
+    "command_repeats_at_least": lambda context, value:
+        command_repeat_count(context.root, context.policy, context.command) >= int(value),
+    "content_matches": lambda context, value:
+        re.search(value, context.raw_json + "\n" + context.content, re.I | re.S) is not None,
+    "environment_declared": lambda context, value:
+        bool(context.facts.get("stack_env", "").strip()) == as_bool(value),
+}
+
+# Judged against each candidate value the action carries, so one qualifying path cannot decide the
+# fate of every other path in the same batch.
+FLAT_VALUE_CONDITIONS = {
+    "path_matches": lambda context, value, candidate: re.search(value, candidate, re.I) is not None,
+    "touches_protected": lambda context, value, candidate:
+        as_bool(value) == listed_in(context.root, PROTECTED_LIST_REL, candidate),
+}
+
+FLAT_FACT_KEYS = ("fact", "is", "is_set")
+
+
+def evaluate_rule_v2(context, rule):
+    """Evaluate a rule written in the newer shape, and return a verdict dict when it fires.
+
+    Soft rules are never evaluated: they are guidance for the model and live in the instructions the
+    hook injects, so the gate has no verdict to give about them.
+    """
+    if not as_bool(rule.get("enabled", True)):
+        return None
+    if str(rule.get("kind", "hard")).strip().lower() == "soft":
+        return None
+    conditions = rule.get("if") or {}
+    fact_part = {key: conditions[key] for key in FLAT_FACT_KEYS if key in conditions}
+    if fact_part and not condition_holds(context, fact_part):
+        return None
+    candidates = context.surface("any")
+    for name, spec in conditions.items():
+        if name in FLAT_FACT_KEYS:
+            continue
+        test = FLAT_VALUE_CONDITIONS.get(name)
+        if test is None:
+            continue
+        candidates = [value for value in candidates if test(context, spec, value)]
+        if not candidates:
+            return None
+    for name, spec in conditions.items():
+        if name in FLAT_FACT_KEYS or name in FLAT_VALUE_CONDITIONS:
+            continue
+        test = FLAT_CONDITIONS.get(name)
+        if test is None:
+            raise OcfError("policy", "rule %r: unknown condition %r" % (rule.get("id"), name))
+        if not test(context, spec):
+            return None
+    return {"id": rule.get("id", "unnamed"), "action": rule.get("result", "deny"),
+            "why": rule.get("why", ""), "hit": candidates[0] if candidates else context.tool,
+            "rule": rule}
+
+
 def evaluate_rule(context, rule):
     """Return a verdict dict when the rule fires, else None.
 
@@ -892,7 +984,14 @@ def evaluate_rule(context, rule):
     per candidate value, because a rule is asking "is THIS path the one I care about". Judging them as
     a union of the whole batch makes one qualifying path decide the fate of every other path, which
     both over-blocks and reports a target that is not the offender.
+
+    A rule in the newer shape ([rule.if] plus result/kind) is handed to evaluate_rule_v2. Both shapes
+    are accepted on purpose: the engine must understand at least as much vocabulary as the policy file
+    uses, because editing the two in sequence - code first, policy second - is exactly how the gate
+    locked itself out on itself once already.
     """
+    if "if" in rule or "result" in rule:
+        return evaluate_rule_v2(context, rule)
     targets = rule.get("on", "any")
     if targets != "any":
         wanted = [item.strip() for item in str(targets).split(",")]
