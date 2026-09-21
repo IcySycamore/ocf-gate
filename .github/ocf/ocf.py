@@ -110,9 +110,25 @@ PLAN_REQUIRED = ("steps", "files")
 # not inherit the control plane exemption, which was a real bypass in the previous implementation.
 # One branch, not three: the PowerShell and sh implementations are gone, and a pattern that keeps
 # naming deleted files would hand the exemption to a path nobody executes.
-ENTRY_PAT = r"\.github[\\/]ocf[\\/]ocf\.py"
+ENTRY_REL = ".github/ocf/ocf.py"
+# The subcommand the hook wiring must pass. Held here and used by both the renderer and the dispatch,
+# because getting it wrong is silent in the worst way: `ocf.py` with no arguments prints the usage and
+# exits 0, which a hook reads as "no objection". A wiring file missing this word is a gate that looks
+# installed and decides nothing.
+HOOK_SUBCOMMAND = "hook"
+ENTRY_PAT = re.escape(ENTRY_REL).replace("/", r"[\\/]")
 ENTRY_RE = re.compile(r"(?i)" + ENTRY_PAT)
 CP_STMT_RE = re.compile(r"(?i)^\s*(?:&\s*)?(?:(?:python3?(?:\.exe)?|py(?:\.exe)?)\s+)?[\"']?" + ENTRY_PAT + r"[\"']?(?:\s|$)")
+
+# name in the wiring file -> (switch in [hooks], the event this program reads, timeout seconds).
+# One table for the same reason as the command table: the wiring file is generated from it, and a
+# second hand-written copy of an event name is a hook that silently stops being installed.
+HOOK_EVENTS = (
+    ("session_start", "SessionStart", 30),
+    ("user_prompt", "UserPromptSubmit", 20),
+    ("pre_tool_use", "PreToolUse", 20),
+    ("post_tool_use", "PostToolUse", 20),
+)
 
 PATH_KEYS = ("filePath", "file_path", "path", "newPath", "uri", "dirPath")
 
@@ -239,6 +255,9 @@ DEFAULT_POLICY = {
     },
     "limits": {"max_cmd_len": 400, "max_cmd_stmts": 3, "max_cmd_repeat": 3, "fail_budget": 2},
     "approval": {"allowed_states": ["executing", "reporting"], "min_reason_len": 8},
+    "hooks": {"enabled": True,
+              "session_start": True, "user_prompt": True,
+              "pre_tool_use": True, "post_tool_use": True},
     "unknown_tool": {"action": "ask"},
     "self_authorization": {"executable_extensions": [".ps1", ".sh", ".py"]},
     "tools": {
@@ -338,8 +357,8 @@ def enabled(policy):
 
 # Every identifier the interpreter is willing to act on. Kept next to the engine rather than in the
 # policy file, because the point is to check the file against the engine, not against itself.
-SECTION_KEYS = ("system", "paths", "limits", "approval", "unknown_tool", "self_authorization",
-                "tools", "selftest", "rule")
+SECTION_KEYS = ("system", "paths", "limits", "approval", "hooks", "unknown_tool",
+                "self_authorization", "tools", "selftest", "rule")
 # `is_set` and `is` sit beside `fact`, not inside it: condition_holds reads them as siblings.
 CONDITION_KEYS = ("fact", "is_set", "is", "listed_in", "content_matches", "length_over",
                   "statements_over", "repeats_at_least", "computed")
@@ -382,6 +401,10 @@ def policy_findings(policy):
         if key not in DEFAULT_POLICY["limits"]:
             problems.append("[limits] unknown key %r; the engine knows %s"
                             % (key, ", ".join(sorted(DEFAULT_POLICY["limits"]))))
+    for key in sorted(policy.get("hooks", {})):
+        if key not in DEFAULT_POLICY["hooks"]:
+            problems.append("[hooks] unknown key %r; the engine knows %s"
+                            % (key, ", ".join(sorted(DEFAULT_POLICY["hooks"]))))
     for key in sorted(policy.get("tools", {})):
         if key not in DEFAULT_POLICY["tools"]:
             problems.append("[tools] unknown class %r; the engine knows %s"
@@ -620,6 +643,53 @@ def render_instructions(policy):
 
 def state_dir_relative(policy):
     return policy_paths(policy)["state_dir"].replace("\\", "/") + "/"
+
+
+def hook_enabled(policy, event):
+    """Whether this event should do anything at all.
+
+    Two switches, both the human's: a master one, and one per event. The master is what "uninstall"
+    means - reload then writes a wiring file with no hooks in it, so VS Code stops starting this
+    program rather than merely ignoring its answers, and there is nothing left behind to switch off
+    later. The check lives here as well as in the wiring file because the wiring file is only re-read
+    when the window reloads.
+    """
+    settings = policy.get("hooks", {})
+    if not as_bool(settings.get("enabled", True)):
+        return False
+    for switch, name, _ in HOOK_EVENTS:
+        if name == event:
+            return as_bool(settings.get(switch, True))
+    return False
+
+
+def render_hooks_json(policy):
+    """Render the wiring file from the switches. Pure, so the file on disk can be compared to it."""
+    body = {}
+    for switch, event, timeout in HOOK_EVENTS:
+        if not hook_enabled(policy, event):
+            continue
+        body[event] = [{"type": "command",
+                        "command": "python3 %s %s" % (ENTRY_REL, HOOK_SUBCOMMAND),
+                        "windows": "python %s %s" % (ENTRY_REL, HOOK_SUBCOMMAND),
+                        "timeout": timeout}]
+    return json.dumps({"hooks": body}, indent=2) + "\n"
+
+
+def write_hooks(root, policy):
+    path = os.path.join(root, HOOKS_REL)
+    rendered = render_hooks_json(policy)
+    current = read_text(path)
+    if current == rendered:
+        return "%s already matches the switches" % HOOKS_REL
+    write_text(path, rendered)
+    off = [name for switch, name, _ in HOOK_EVENTS if not hook_enabled(policy, name)]
+    if not hook_enabled(policy, "PreToolUse"):
+        return ("rewrote %s. The gate is not installed now, so nothing is refused. Reload the VS Code "
+                "window for it to take effect: hooks are read when the window starts." % HOOKS_REL)
+    return ("rewrote %s (%s off). Reload the VS Code window for it to take effect: hooks are read "
+            "when the window starts and are not re-read afterwards."
+            % (HOOKS_REL, ", ".join(off) if off else "no event"))
 
 
 def write_instructions(root, policy):
@@ -1413,6 +1483,10 @@ def cmd_hook(root, argv):
         policy, warnings = dict(STRICT_POLICY), [("system", str(exc))]
     payload = read_payload()
     event = payload.get("hook_event_name") or (argv[0] if argv else "")
+    if not hook_enabled(policy, event):
+        # Switched off is silent, not "allowed": no output means no decision to make, and the events
+        # this program does not read at all land here too.
+        return 0
     try:
         if event == "PreToolUse":
             action, rule_id, reason, context = check_pretooluse(root, policy, payload)
@@ -2038,12 +2112,10 @@ def cmd_reload(root, policy, args):
         out("refusing to reload: the policy did not load cleanly, so nothing was changed")
         return 1
     out(write_instructions(root, policy))
+    out(write_hooks(root, policy))
     rules = soft_rules(policy)
     on = [rule for rule in rules if as_bool(rule.get("enabled", True))]
     out("soft rules: %d of %d switched on" % (len(on), len(rules)))
-    out("hooks: unchanged by reload. Hook wiring is not configuration yet, so changing it means "
-        "editing .github/hooks/orchestrator.json and reloading the VS Code window - hooks are read "
-        "when the window starts and are not re-read afterwards.")
     journal(root, policy, read_state(root, policy), "reload: configuration re-read")
     return 0
 
@@ -2109,7 +2181,7 @@ def main(argv):
     command = argv[0]
     args = argv[1:]
     root = find_root()
-    if command == "hook":
+    if command == HOOK_SUBCOMMAND:
         return cmd_hook(root, args)
     try:
         policy, warnings = load_policy(root)

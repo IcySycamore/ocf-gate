@@ -804,6 +804,67 @@ def test_generated_instructions():
     check_generated_instructions()
 
 
+def check_hooks_wiring():
+    """The wiring file must equal what the switches render, and a switched-off event must vanish.
+
+    Two silent failures. A wiring file that drifted from the switches means the human has switched
+    something off and is still being gated, or switched it on and is not - and either way the file
+    says otherwise. A master switch that only empties the answers rather than the wiring leaves the
+    program being started on every tool call, which is the "installed like a plaster" the switches
+    exist to avoid. The renderer is exercised in a temp root, so this check can pass as well as fail.
+    """
+    ocf = load_ocf_module()
+    policy, _ = ocf.load_policy(REPO)
+    written = ocf.render_hooks_json(policy)
+    path = os.path.join(REPO, ocf.HOOKS_REL)
+    with open(path, "r", encoding="utf-8") as handle:
+        on_disk = handle.read()
+    assert on_disk == written, (
+        "%s no longer matches the [hooks] switches in policy.toml, so the switches are not in force. "
+        "Run `python .github/ocf/ocf.py reload` in your own terminal, then reload the VS Code window."
+        % ocf.HOOKS_REL)
+    probe = build_root({"state": "executing"})
+    try:
+        def switches(**over):
+            merged = json.loads(json.dumps(policy))
+            merged.setdefault("hooks", {}).update(over)
+            return merged
+
+        everything = json.loads(ocf.render_hooks_json(switches()))
+        assert sorted(everything["hooks"]) == sorted(
+            event for _, event, _ in ocf.HOOK_EVENTS), (
+            "with everything switched on, the wiring should hold every event: %s"
+            % sorted(everything["hooks"]))
+        # The command has to carry the subcommand. Without it the program prints its usage and exits
+        # 0, which a hook reads as "no objection" - the gate would look installed and decide nothing.
+        for event, entries in everything["hooks"].items():
+            for entry in entries:
+                assert ocf.HOOK_SUBCOMMAND in entry["command"], (
+                    "the wiring for %s runs the entry point without %r, so it would answer nothing "
+                    "and the gate would be silently off: %r"
+                    % (event, ocf.HOOK_SUBCOMMAND, entry["command"]))
+        one_off = json.loads(ocf.render_hooks_json(switches(pre_tool_use=False)))
+        assert "PreToolUse" not in one_off["hooks"] and len(one_off["hooks"]) == 3, (
+            "switching one event off must remove it from the wiring, not merely silence it: %s"
+            % sorted(one_off["hooks"]))
+        master = json.loads(ocf.render_hooks_json(switches(enabled=False)))
+        assert master["hooks"] == {}, (
+            "the master switch must leave nothing installed, so the program is never started: %s"
+            % master["hooks"])
+        assert not ocf.hook_enabled(switches(enabled=False), "PreToolUse"), (
+            "the master switch did not reach the entry point; the wiring file is only re-read on a "
+            "window reload, so a master switch that works only there is a gate that keeps denying")
+        assert not ocf.hook_enabled(switches(user_prompt=False), "UserPromptSubmit"), (
+            "a per-event switch did not reach the entry point")
+        assert ocf.hook_enabled(switches(), "PreToolUse"), "the gate is off with the switches on"
+    finally:
+        shutil.rmtree(probe, ignore_errors=True)
+
+
+def test_hooks_wiring():
+    check_hooks_wiring()
+
+
 def check_rule_text_is_flattened():
     """A soft rule's text reaches the model as one line, with the spaces the human meant and no others.
 
@@ -840,6 +901,7 @@ CHECKS = (
     ("gated-transitions", test_gated_transitions),
     ("new-rule-shape", test_new_rule_shape),
     ("soft-rules-never-gate", test_soft_rules_never_gate),
+    ("hooks-wiring", test_hooks_wiring),
     ("rule-text-flattened", test_rule_text_is_flattened),
     ("generated-instructions", test_generated_instructions),
     ("markdown-links", test_markdown_links),

@@ -42,6 +42,20 @@ state_dir = ".orchestrator"
 # list that can be pointed away. Its entries are the files the machine never modifies, and a comment
 # inside it marks the ones that are human-written.
 
+[hooks]
+# Which events the orchestrator is installed on. `reload` rewrites .github/hooks/orchestrator.json
+# from these switches, so this is the whole of "install / uninstall": turning `enabled` off writes a
+# wiring file with no hooks in it, and VS Code then never starts this program - nothing is left behind
+# to switch off later. Any change here needs a VS Code window reload to take effect, because hooks are
+# read when the window starts.
+#
+# PreToolUse is the gate. Switching it off stops everything being refused; the rest only add context.
+enabled       = true
+session_start = true
+user_prompt   = true
+pre_tool_use  = true
+post_tool_use = true
+
 [limits]
 # Read on every invocation, so changes apply without reloading the window.
 max_cmd_len = 400
