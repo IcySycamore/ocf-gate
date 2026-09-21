@@ -2,9 +2,9 @@
 
 把「人类批准后才动手」从口头约定变成**不可绕过的代码门禁**。给 VS Code Copilot Chat 用。
 
-- 规则全文（agent 读这一份）：[`.github/work-control-flow.md`](.github/work-control-flow.md)
-- 策略配置指南（人类读这份改门禁）：[`POLICY-GUIDE.md`](POLICY-GUIDE.md)
-- 常驻契约（每个请求都加载）：[`.github/copilot-instructions.md`](.github/copilot-instructions.md)
+- 规则全文：[`.github/work-control-flow.md`](.github/work-control-flow.md)
+- 策略配置指南：[`POLICY-GUIDE.md`](POLICY-GUIDE.md)
+- 请求头：[`.github/copilot-instructions.md`](.github/copilot-instructions.md)
 - 重构设计与取舍记录：[`REFACTOR-DESIGN.md`](REFACTOR-DESIGN.md)
 
 ## 解决什么问题
@@ -163,8 +163,7 @@ python .github\ocf\ocf.py deny "docs/**"
 ⚠️ **改 `.github/**`前先把`system.enabled`设为`false`**：这些文件受自保护，而且自保护挂在
 `enabled`上而不是「是否已批准」，所以`executing` 期间同样有效。人类手工编辑则无此限制。
 
-✅ **`.github/` 下刻意保持纯 ASCII**（文案与注释全英文）。这是为了从根上消掉一整类编码 bug
-（BOM/GBK/JSON 转义/控制台代码页），不是为了好看 —— 不要往里加中文。
+✅ **`.github/` 下刻意保持纯 ASCII**
 代价是 `/work-intake` 这类菜单项的描述也是英文；想改中文只改 `description` / `argument-hint` 两行。
 
 ## 修复

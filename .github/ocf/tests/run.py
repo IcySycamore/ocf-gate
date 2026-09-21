@@ -496,10 +496,57 @@ def test_policy_vocabulary():
     check_policy_vocabulary()
 
 
+def check_transition_table():
+    """The one table must agree with the states, and the CLI vocabulary must agree with the dispatcher.
+
+    `STATES` stays the literal and the table is built from it, so this compares the two rather than
+    deriving one from the other: a derived value would satisfy the comparison by construction, which is
+    indistinguishable from having no check at all. The vocabulary half matters for the same reason: a
+    command in the table but not in the dispatcher is unreachable, and one in the dispatcher but not in
+    the table is a name the usage text never mentions.
+    """
+    ocf = load_ocf_module()
+    table = ocf.TRANSITIONS
+    problems = []
+    if set(table["states"]) != set(ocf.STATES):
+        problems.append("the table's states %s differ from STATES %s"
+                        % (sorted(set(table["states"])), sorted(set(ocf.STATES))))
+    for target in table["agent_targets"]:
+        if target not in ocf.STATES:
+            problems.append("the agent target %r is not a state" % target)
+    mentioned = set(table["agent_targets"])
+    for pair in table["gates"]:
+        for name in pair:
+            if name not in ocf.STATES:
+                problems.append("a gate key names %r, which is not a state" % name)
+        mentioned.update(pair)
+    unmentioned = sorted(set(ocf.STATES) - mentioned)
+    if unmentioned:
+        problems.append("no part of the table mentions the state(s) %s, so nothing governs them"
+                        % ", ".join(unmentioned))
+    declared = set()
+    for group in table["commands"].values():
+        for line in group:
+            declared.update(line)
+    handlers = set(ocf.COMMAND_HANDLERS)
+    if handlers != declared:
+        problems.append("the CLI vocabulary differs: only in the dispatcher %s; only in the table %s"
+                        % (sorted(handlers - declared), sorted(declared - handlers)))
+    missing_usage = sorted(name for name in declared if name not in table["usage"])
+    if missing_usage:
+        problems.append("the usage text has no fragment for %s" % ", ".join(missing_usage))
+    assert not problems, "; ".join(problems)
+
+
+def test_transition_table():
+    check_transition_table()
+
+
 CHECKS = (
     ("repo-ascii", test_repo_is_ascii),
     ("plan-template", test_plan_template),
     ("policy-vocabulary", test_policy_vocabulary),
+    ("transition-table", test_transition_table),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),

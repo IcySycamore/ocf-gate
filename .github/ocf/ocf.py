@@ -38,12 +38,54 @@ except ImportError:  # Python < 3.11
 # Constants
 # ---------------------------------------------------------------------------
 
+# The state set is the literal and the table is built from it. Deriving STATES from the table instead
+# would make the structural check that compares the two true by construction, and a check that cannot
+# fail is indistinguishable from no check at all.
 STATES = ("ready", "asking", "planning", "executing", "reporting", "blocked")
-AGENT_TARGETS = ("asking", "planning", "reporting", "ready", "blocked")
-ACTING_STATES = ("executing", "reporting")
 
-AGENT_COMMANDS = ("status", "set", "gate", "journal", "fail", "ok", "advance", "init", "selftest", "hook")
-HUMAN_COMMANDS = ("approve", "reject", "confirm", "allow", "deny", "human-code")
+# One table, one owner: the states, the targets the agent may advance to, the states in which acting
+# is already approved, the gates each transition must pass, and the CLI vocabulary of both sides,
+# including the fragment the usage text is rendered from. The hook, advance, approve, reject, confirm
+# and the usage text all read it. A state list with four copies is a rename waiting to be missed, and
+# that miss is silent.
+TRANSITIONS = {
+    "states": STATES,
+    "agent_targets": ("asking", "planning", "reporting", "ready", "blocked"),
+    "acting_states": ("executing", "reporting"),
+    "gates": {
+        ("asking", "planning"): ("context", "docs-decision", "grill-valid"),
+        ("planning", "executing"): ("plan-schema", "zero-p0", "human-code-clear", "stack-env"),
+    },
+    # Grouped the way the usage text prints them: one tuple per line.
+    "commands": {
+        "agent": (("status", "set", "gate", "journal", "fail", "ok"),
+                  ("advance", "init", "selftest")),
+        "human": (("approve", "reject", "confirm"),
+                  ("allow", "deny", "human-code")),
+    },
+    "usage": {
+        "status": "status",
+        "set": "set key=value",
+        "gate": "gate [name|all]",
+        "journal": "journal [n]",
+        "fail": 'fail "<reason>"',
+        "ok": "ok",
+        "advance": 'advance <%s> ["<reason>"]',
+        "init": "init",
+        "selftest": "selftest",
+        "approve": 'approve "<reason>"',
+        "reject": 'reject ["<reason>"]',
+        "confirm": "confirm",
+        "allow": "allow <path>",
+        "deny": "deny <path>",
+        "human-code": "human-code <path>",
+    },
+}
+
+# Views, not copies: one thing under the names the call sites already use.
+AGENT_TARGETS = TRANSITIONS["agent_targets"]
+ACTING_STATES = TRANSITIONS["acting_states"]
+ENTER_TRANSITION_GATES = TRANSITIONS["gates"]
 
 POLICY_REL = ".github/ocf/policy.toml"
 HOOKS_REL = ".github/hooks/orchestrator.json"
@@ -1250,11 +1292,6 @@ GATES = {
     "stack-env": gate_stack_env,
 }
 
-ENTER_TRANSITION_GATES = {
-    ("asking", "planning"): ("context", "docs-decision", "grill-valid"),
-    ("planning", "executing"): ("plan-schema", "zero-p0", "human-code-clear", "stack-env"),
-}
-
 
 def gate_missing(root, policy):
     """The list form of gate_context. One line, so it cannot drift from context_missing."""
@@ -1604,15 +1641,53 @@ def update_list(root, policy, which, path, add):
 # Entry
 # ---------------------------------------------------------------------------
 
-USAGE = """OCF - orchestrator control flow
+# name -> handler. main() dispatches through this, and the structural check asserts that this map and
+# the table's "commands" block declare exactly the same vocabulary. A command that exists in one and
+# not the other is either unreachable or a name the usage text lies about.
+COMMAND_HANDLERS = {
+    "status": lambda root, policy, args: cmd_status(root, policy),
+    "set": cmd_set,
+    "gate": cmd_gate,
+    "journal": cmd_journal,
+    "fail": cmd_fail,
+    "ok": cmd_ok,
+    "advance": cmd_advance,
+    "init": lambda root, policy, args: cmd_init(root, policy),
+    "selftest": cmd_selftest,
+    "approve": cmd_approve,
+    "reject": cmd_reject,
+    "confirm": cmd_confirm,
+    "allow": lambda root, policy, args: update_list(root, policy, "allowed_edits_list",
+                                                    args[0] if args else "", True),
+    "deny": lambda root, policy, args: update_list(root, policy, "allowed_edits_list",
+                                                   args[0] if args else "", False),
+    "human-code": lambda root, policy, args: update_list(root, policy, "human_code_list",
+                                                         args[0] if args else "", True),
+}
 
-agent:  status | set key=value | gate [name|all] | journal [n] | fail "<reason>" | ok
-        advance <asking|planning|reporting|ready|blocked> ["<reason>"] | init | selftest
-human:  approve "<reason>" | reject ["<reason>"] | confirm
-        allow <path> | deny <path> | human-code <path>
+
+def render_usage():
+    """Render the usage text from the table, so the command list has one owner.
+
+    Written out instead of typed a second time: a usage line that names a command the dispatcher does
+    not have, or an advance target the machine does not accept, is a lie the human reads first.
+    """
+    fragments = dict(TRANSITIONS["usage"])
+    fragments["advance"] = fragments["advance"] % "|".join(TRANSITIONS["agent_targets"])
+    lines = [" | ".join(fragments[name] for name in group)
+             for side in ("agent", "human") for group in TRANSITIONS["commands"][side]]
+    return """OCF - orchestrator control flow
+
+agent:  %s
+        %s
+human:  %s
+        %s
 
 The hook entry is: ocf.py hook   (reads the event JSON on stdin)
-"""
+""" % tuple(lines)
+
+
+USAGE = render_usage()
 
 
 def main(argv):
@@ -1629,39 +1704,12 @@ def main(argv):
         policy, warnings = load_policy(root)
         for kind, text in warnings:
             out("[%s] %s" % (kind, text))
-        if command == "status":
-            return cmd_status(root, policy)
-        if command == "set":
-            return cmd_set(root, policy, args)
-        if command == "gate":
-            return cmd_gate(root, policy, args)
-        if command == "journal":
-            return cmd_journal(root, policy, args)
-        if command == "fail":
-            return cmd_fail(root, policy, args)
-        if command == "ok":
-            return cmd_ok(root, policy, args)
-        if command == "advance":
-            return cmd_advance(root, policy, args)
-        if command == "init":
-            return cmd_init(root, policy)
-        if command == "selftest":
-            return cmd_selftest(root, policy, args)
-        if command == "approve":
-            return cmd_approve(root, policy, args)
-        if command == "reject":
-            return cmd_reject(root, policy, args)
-        if command == "confirm":
-            return cmd_confirm(root, policy, args)
-        if command == "allow":
-            return update_list(root, policy, "allowed_edits_list", args[0] if args else "", True)
-        if command == "deny":
-            return update_list(root, policy, "allowed_edits_list", args[0] if args else "", False)
-        if command == "human-code":
-            return update_list(root, policy, "human_code_list", args[0] if args else "", True)
-        out("unknown command %r" % command)
-        out(USAGE)
-        return 1
+        handler = COMMAND_HANDLERS.get(command)
+        if handler is None:
+            out("unknown command %r" % command)
+            out(USAGE)
+            return 1
+        return handler(root, policy, args)
     except OcfError as exc:
         out(exc.tagged())
         return 1
