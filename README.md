@@ -43,7 +43,6 @@ hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你�
 │   ├── ocf.py                       唯一实现：状态机 + 判定引擎 + CLI + 自检 + hook 入口
 │   ├── policy.toml                  唯一策略：规则、阈值、工具分类、自检金丝雀
 │   ├── requirements.txt             运行时依赖（仅 Python < 3.11 需 tomli，否则为空）
-│   ├── requirements-dev.txt         测试依赖（pytest）
 │   └── tests/
 │       ├── cases.json               用例表（交给真实 hook 入口判定）
 │       └── run.py                   运行器 + 结构断言
@@ -76,7 +75,11 @@ hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你�
 - **运行时零第三方依赖。** 入口只用标准库，TOML 用 `tomllib`（3.11+）或 `tomli` 兜底。
   这是硬约束：hooks 由 VS Code 在**宿主**上启动，无法用容器包裹，一旦入口缺依赖，
   门禁会**静默 fail-open** —— 正是这套系统要消灭的故障。
-- **Docker 只用于跑测试**，不参与运行时。[`Dockerfile`](Dockerfile) 里已写明这一点。
+- **Docker 不参与运行时，只在测试时有用。** 把门禁跑进容器不可能（VS Code 在**宿主**上启动它），
+  而跑测试也只要 CPython。它真正证明过的价值是：**把同一套用例放到 Linux 与其它 Python 版本上跑** ——
+  路径/分隔符逻辑的另一半、以及 <3.11 的 tomli 分支，只有在那里才走得到。
+  实测价值：它当场抛出 "no tests ran"，因为 Dockerfile 自己用 `python -m pytest` 而 pytest 默认
+  只收集 `test_*.py`，我们的运行器叫 `run.py`。宿主上直接跑 `run.py` 永远发现不了这个。
 - Windows 上解释器名是 `python`；其它平台是 `python3`（见 `orchestrator.json` 的平台覆盖）。
 
 | 条件               | 说明                                                                                                              |

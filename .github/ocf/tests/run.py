@@ -7,9 +7,12 @@ repository. That matters: a case fails when the entry point stops working, not o
 logic changes. The previous implementation's worst defects were all of that kind - a guard that
 silently stopped applying - and none of them would have been caught by unit-testing rule logic alone.
 
-Run it either way:
+Run it with:
+
     python .github/ocf/tests/run.py
-    python -m pytest .github/ocf/tests -q
+
+It needs only CPython: no test framework, no third party package, nothing to install. Each case is a
+subprocess through the real hook entry point, and the structural checks live in CHECKS at the bottom.
 """
 
 import importlib.util

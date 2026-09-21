@@ -57,7 +57,8 @@
 因此：
 
 - `ocf.py` 运行时只需解释器。TOML 用 `tomllib`（3.11+），低于 3.11 时用 `tomli` 兜底；两者都取不到时**不降级为"无策略"**，而是报 `[environment]` 并保持最严兜底。
-- 第三方依赖（`pytest`、可选的 schema 校验库）只出现在 `requirements-dev.txt`，仅用于测试与 CI。
+- 第三方依赖：**没有**。门禁入口只需标准库；用例表也只需 CPython（曾用过 `pytest`，实测它根本
+  收集不到 `run.py`，已移除 —— 一个从不生效的依赖比没有依赖更糟）。
 - Docker 用于**测试与 CI 的复现环境**，不参与运行时。
 
 打包形态：
@@ -65,8 +66,7 @@
     .github/ocf/ocf.py             唯一实现（入口只用标准库）
     .github/ocf/policy.toml        出厂策略（随包分发）
     .github/ocf/requirements.txt   运行时依赖（标记条件，≥3.11 时为空）
-    .github/ocf/requirements-dev.txt  测试/CI 依赖
-    .github/ocf/tests/             用例表 + 运行器
+    .github/ocf/tests/             用例表 + 运行器（只需 CPython）
     .github/work-control-flow.md   规则全文（原先挂在 skill 的 references/ 下，第 12 节已移出）
     Dockerfile                     只用于跑用例
     .github/hooks/orchestrator.json   只负责把 hook 事件指向 ocf.py
@@ -159,7 +159,7 @@ hook 命令保持一行，用平台覆盖解决解释器名差异（`py` / `pyth
 不变式：**状态文件只由 `ocf.py` 写入。** agent 不能直接改，只能通过 CLI 调用触发写入。两个例外都在 CLI 内部：
 
 1. hook 初始化（人类第一条消息触发 `ready -> asking`）；
-2. 人类批准环节（`ocf approve`）。
+2. 人类批准环节（`ocf.py approve`）。
 
 落地措施：
 
@@ -172,7 +172,7 @@ hook 命令保持一行，用平台覆盖解决解释器名差异（`py` / `pyth
 
 ## 6. 自检与问题分类
 
-新增 `ocf selftest`，并在 `SessionStart` 与首次 `UserPromptSubmit` 自动执行一次。
+新增 `ocf.py selftest`，并在 `SessionStart` 与首次 `UserPromptSubmit` 自动执行一次。
 
 自检项：
 
@@ -219,7 +219,7 @@ hook 命令保持一行，用平台覆盖解决解释器名差异（`py` / `pyth
 一张用例表，每条 = `(输入 JSON, 期望 Verdict, 期望 rule id)`，离线运行，不依赖 VS Code：
 
     .github/ocf/tests/cases.json   用例表（一个文件，便于自上而下通读）
-    .github/ocf/tests/run.py       运行器（可直接跑，也兼容 pytest）
+    .github/ocf/tests/run.py       运行器（只需 CPython，无测试框架）
 
 运行器为每条用例搭一个临时仓库，把用例作为 **真实 hook 入口的子进程** 跑一遍（而非直接调用判定函数），
 并断言三件事：判定结果、命中的 rule id、进程退出码为 0 且 stderr 为空。“入口本身坏掉”因此也会失败。

@@ -1,7 +1,6 @@
 # Work Control Flow
 
-Full rules: [work-control-flow.md](./work-control-flow.md). Read it before first acting.
-Deploy and maintenance: [README.md](../README.md).
+Full rules: [work-control-flow.md](./work-control-flow.md). Read it before first acting and whenever your attention begins to drift.
 
 ## Entry point
 
@@ -19,7 +18,7 @@ The gate's own configuration is `.github/ocf/policy.toml`, which the human edits
     ready -> asking -> planning -> executing -> reporting -> ready      bypass: blocked
 
 Only the human running `python .github/ocf/ocf.py approve "<reason>"` in their own terminal enters
-executing. Do not run it for them. Do not set approved_by.
+executing. Never run it for them or set approved_by.
 
 ## Three behaviours no code can enforce
 
@@ -27,7 +26,7 @@ executing. Do not run it for them. Do not set approved_by.
    human. A perfunctory reply is not an answer, so re-ask.
 2. planning: dispatch the plan-auditor subagent for an independent P0 review, never audit your own
    plan. At P0 zero, give the human the action report and the risk design report, hand them
-   `ocf approve "<reason>"` verbatim, then stop.
+   `python .github/ocf/ocf.py approve "<reason>"` verbatim, then stop.
 3. To see a screen, state exactly what to capture and how many shots, then ask the human to attach the
    screenshot. Attachments are readable, screenshot tools are permanently blocked.
 

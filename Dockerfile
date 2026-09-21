@@ -14,11 +14,16 @@ FROM python:3.12-slim
 WORKDIR /work
 
 # Dependencies first, so a source change does not invalidate the pip layer.
-COPY .github/ocf/requirements.txt .github/ocf/requirements-dev.txt .github/ocf/
-RUN pip install --no-cache-dir -r .github/ocf/requirements-dev.txt
+COPY .github/ocf/requirements.txt .github/ocf/
+RUN pip install --no-cache-dir -r .github/ocf/requirements.txt
 
 COPY . .
 
 # Runs the case table (each case through the real hook entry point) plus the structural checks:
 # repository ASCII, markdown links, agent cross-references, and gate-file protection.
-CMD ["python", "-m", "pytest", ".github/ocf/tests", "-q"]
+#
+# Deliberately the same command a human runs on the host, with no test framework in between: the
+# suite needs only CPython, so there is nothing for a framework to arrange. An earlier revision used
+# `python -m pytest`, which collected nothing at all, because pytest only collects test_*.py and the
+# runner is run.py. Docker found that; nothing on the host would have.
+CMD ["python", ".github/ocf/tests/run.py"]
