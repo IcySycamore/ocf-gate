@@ -912,6 +912,36 @@ def test_line_endings_are_normalised():
     check_line_endings_are_normalised()
 
 
+def check_no_invented_spaces():
+    """Every space in the rendered contract must sit next to an ASCII character.
+
+    This is the invariant behind one_line, stated as a property of the whole document instead of as a
+    list of sentences to compare: Chinese is written without spaces, so a space between two Han
+    characters is always an artefact - produced by joining a wrapped line with a space, which happened
+    three separate times while this text was being written. Comparing specific sentences only catches
+    the sentences someone remembered to list; they also go stale the moment a human rewrites the rule,
+    which is exactly what a human is supposed to do.
+    """
+    ocf = load_ocf_module()
+    policy, _ = ocf.load_policy(REPO)
+    offenders = []
+    for number, line in enumerate(ocf.render_instructions(policy).splitlines(), start=1):
+        for index, char in enumerate(line):
+            if char != " ":
+                continue
+            before = line[index - 1] if index else ""
+            after = line[index + 1] if index + 1 < len(line) else ""
+            if not (before.isascii() or after.isascii()):
+                offenders.append("line %d: %r" % (number, line[max(0, index - 12):index + 12]))
+    assert not offenders, (
+        "the rendered contract holds a space that is not next to an ASCII character, so a wrapped "
+        "line was joined with a space instead of being closed up: %s" % "; ".join(offenders[:3]))
+
+
+def test_no_invented_spaces():
+    check_no_invented_spaces()
+
+
 def check_rule_text_is_flattened():
     """A soft rule's text reaches the model as one line, with the spaces the human meant and no others.
 
@@ -951,6 +981,7 @@ CHECKS = (
     ("hooks-wiring", test_hooks_wiring),
     ("line-endings", test_line_endings_are_normalised),
     ("rule-text-flattened", test_rule_text_is_flattened),
+    ("no-invented-spaces", test_no_invented_spaces),
     ("generated-instructions", test_generated_instructions),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),

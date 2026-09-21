@@ -7,23 +7,12 @@ Full rules: [work-control-flow.md](./work-control-flow.md). Read it before first
     Windows: python .github\ocf\ocf.py <cmd>
     Other:   python3 .github/ocf/ocf.py <cmd>
 
-Agent may run: status, set, gate, journal, fail, ok, init, selftest. advance targets are limited to
-asking, planning, reporting, ready, blocked. Human terminal only, calling these gets you blocked:
-approve, reject, confirm, allow, deny, human-code.
-Never hand-edit state, facts, journal.log, human-code.txt or allowed-edits.txt under .orchestrator/.
-The gate's own configuration is `.github/ocf/policy.toml`, which the human edits by hand.
-
 ## State machine
 
     ready -> asking -> planning -> executing -> reporting -> ready      bypass: blocked
 
 Only the human running `python .github/ocf/ocf.py approve "<reason>"` in their own terminal enters
 executing. Never run it for them or set approved_by.
-
-## When a gate blocks you
-
-Fix the precondition it names: supply the missing fact, split the command, stop silencing output, go
-ask the human. Never rewrite your way around it. Circumventing a gate is a serious violation.
 
 <!-- OCF:GENERATED -->
 <!-- Written by `python .github/ocf/ocf.py reload` from the tables in this program and
@@ -45,7 +34,7 @@ Full rules: [work-control-flow.md](./work-control-flow.md). Read it before first
 agent: status | set | gate | journal | fail | ok
        advance | init | selftest
 human: approve | reject | confirm
-       allow | deny | human-code
+       allow | deny
        reload
 
 A human-only command is refused even if the human asks you in the conversation to run it. "The human already said yes" is not approval; approval is the human running the command in their own terminal. If they want it to stop, they turn the rule off or edit the config - they do not authorise it by asking.
@@ -64,6 +53,8 @@ Entering a state through a gate means the gate passed. What each one requires:
 Only the human, running `python .github/ocf/ocf.py approve "<reason>"` in their own terminal, enters executing. Never run it for them and never set approved_by yourself.
 
 ## Soft rules
+
+No hook can enforce these: nothing can check whether a sentence was written. They are put in front of you instead. Each one names the moment it applies to.
 
 ### ask
 
