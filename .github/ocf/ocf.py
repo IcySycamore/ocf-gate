@@ -63,8 +63,12 @@ CP_STMT_RE = re.compile(r"(?i)^\s*(?:&\s*)?(?:(?:python3?(?:\.exe)?|py(?:\.exe)?
 
 PATH_KEYS = ("filePath", "file_path", "path", "newPath", "uri", "dirPath")
 
-# Conditions that must be judged against one candidate value rather than against the whole call.
-VALUE_SCOPED_CONDITIONS = ("listed_in",)
+# Conditions that must be judged against one candidate value rather than against the whole call. One
+# table, so the name list and the evaluator cannot drift apart: VALUE_SCOPED_CONDITIONS is derived
+# from it instead of written a second time. The lambda resolves `listed_in` at call time, which is why
+# the table may sit above the function it uses.
+VALUE_SCOPED_TESTS = {"listed_in": lambda context, spec, value: listed_in(context.root, spec, value)}
+VALUE_SCOPED_CONDITIONS = tuple(VALUE_SCOPED_TESTS)
 CONTENT_KEYS = ("content", "newString", "new_string", "newCode", "new_str", "body")
 
 WRITE_RE = re.compile(
@@ -773,20 +777,12 @@ class Context(object):
 
 
 def condition_holds(context, condition):
-    """Evaluate a context-scoped condition. See condition_holds_value for the value-scoped ones."""
+    """Evaluate a context-scoped condition. Value-scoped ones are handled by filter_condition."""
     if "fact" in condition:
         name = condition["fact"]
         if condition.get("is_set"):
             return bool(context.facts.get(name, "").strip())
         return context.facts.get(name, "") == str(condition.get("is", ""))
-    if "listed_in" in condition:
-        # The union form, kept for context-scoped use. Rules that filter candidates want the
-        # per-value form below instead; taking a union here is what once let a single human-code path
-        # drag every other path in the same batch into the denial.
-        for value in context.surface("path") + context.surface("write_target"):
-            if listed_in(context.root, condition["listed_in"], value):
-                return True
-        return False
     if "content_matches" in condition:
         return re.search(condition["content_matches"], context.raw_json + "\n" + context.content,
                          re.I | re.S) is not None
@@ -816,11 +812,30 @@ def when_holds(context, when):
     raise OcfError("policy", "unknown when value %r" % when)
 
 
-def condition_holds_value(context, name, spec, value):
-    """Evaluate a value-scoped condition against one candidate, not against the whole batch."""
-    if name == "listed_in":
-        return listed_in(context.root, spec, value)
-    return condition_holds(context, {name: spec})
+def filter_condition(context, condition, values, keep):
+    """Return the candidate values that survive one condition.
+
+    Conditions split in two. Context-scoped ones are true or false for the call as a whole.
+    Value-scoped ones must be judged per candidate, because the rule is asking "is THIS path the one I
+    care about": judging them as a union of the batch makes one qualifying path decide the fate of
+    every other path, which both over-blocks and names a target that is not the offender.
+
+    `keep` is True for only_if and False for unless, so the two forms share one implementation rather
+    than two that must be kept in step by hand.
+    """
+    context_part = {key: value for key, value in condition.items()
+                    if key not in VALUE_SCOPED_CONDITIONS}
+    if context_part and keep != bool(condition_holds(context, context_part)):
+        return []
+    survivors = list(values)
+    for name, spec in condition.items():
+        test = VALUE_SCOPED_TESTS.get(name)
+        if test is None:
+            continue
+        survivors = [value for value in survivors if keep == bool(test(context, spec, value))]
+        if not survivors:
+            return []
+    return survivors
 
 
 def evaluate_rule(context, rule):
@@ -849,29 +864,19 @@ def evaluate_rule(context, rule):
             hits.append(value)
     if not hits:
         return None
-    for key in ("only_if", "unless"):
-        condition = rule.get(key)
-        if not condition:
-            continue
-        context_part = {k: v for k, v in condition.items() if k not in VALUE_SCOPED_CONDITIONS}
-        value_part = {k: v for k, v in condition.items() if k in VALUE_SCOPED_CONDITIONS}
-        if context_part:
-            holds = condition_holds(context, context_part)
-            if (key == "only_if" and not holds) or (key == "unless" and holds):
-                return None
-        for name, spec in value_part.items():
-            if key == "only_if":
-                hits = [v for v in hits if condition_holds_value(context, name, spec, v)]
-            else:
-                hits = [v for v in hits if not condition_holds_value(context, name, spec, v)]
-            if not hits:
-                return None
-    exempt = rule.get("exempt_when_listed")
-    if exempt:
-        remaining = [value for value in hits if not listed_in(context.root, exempt, value)]
-        if not remaining:
+    # `exempt_when_listed` is the same value-scoped test as `unless: {listed_in: ...}`, so it is not a
+    # third code path. All of them become one list of (condition, keep) and run through one evaluator;
+    # two implementations of "is this candidate excused" is exactly how they drift apart.
+    conditions = []
+    for key, keep in (("only_if", True), ("unless", False)):
+        if rule.get(key):
+            conditions.append((rule[key], keep))
+    if rule.get("exempt_when_listed"):
+        conditions.append(({"listed_in": rule["exempt_when_listed"]}, False))
+    for condition, keep in conditions:
+        hits = filter_condition(context, condition, hits, keep)
+        if not hits:
             return None
-        hits = remaining
     return {"id": rule.get("id", "unnamed"), "action": rule.get("action", "deny"),
             "why": rule.get("why", ""), "hit": hits[0], "rule": rule}
 
