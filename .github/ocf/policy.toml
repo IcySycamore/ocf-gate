@@ -18,6 +18,7 @@
 #   listed_in     = "<file>"                   the surface value matches a line in that file
 #   content_matches = "<regex>"                the tool's content or raw tool_input matches
 #   computed      = "<name>"                   a named flag computed in code (see below)
+#   approval      = true                      approval applies and the state is not an acting state
 #
 # Thresholds are not in this list: a rule that needs a number states the number itself
 # (`command_length_over = 400`), so the rule and its limit cannot drift into two files.
@@ -343,33 +344,43 @@ class           = "exec"
 command_matches = '(?i)rm\s+-rf\s+/[^.]|git\s+push\s+.*--force|drop\s+table|git\s+reset\s+--hard|Remove-Item.*-Recurse.*-Force'
 
 # Approval is evaluated after every specific rule, so a precise reason beats a generic one.
+# `approval = true` reads as: approval applies and the state is not an acting state, i.e. exactly the
+# case that needs a human approve. It is a condition like any other, so a rule can combine it with a
+# class or be excepted by `unless`.
 [[rule]]
-id = "approval-required-edit"
-on = "edit"
-surface = "any"
-match = '.*'
-when = "not_approved"
-action = "require_approval"
-why = "File edits need approval. The human runs the approve subcommand in their own terminal."
+id      = "approval-required-edit"
+enabled = true
+result  = "require_approval"
+why     = "File edits need approval. The human runs the approve subcommand in their own terminal."
+
+[rule.if]
+class    = "edit"
+approval = true
 
 [[rule]]
-id = "approval-required-exec"
-on = "exec"
-surface = "any"
-match = '.*'
-when = "not_approved"
-action = "require_approval"
-unless = { computed = "control_plane" }
-why = "Commands need approval. The human runs the approve subcommand in their own terminal."
+id      = "approval-required-exec"
+enabled = true
+result  = "require_approval"
+why     = "Commands need approval. The human runs the approve subcommand in their own terminal."
+
+# Reading the orchestrator's own state is not acting: a command that only calls this program is how
+# the state gets read at all, so requiring approval for it would make the state unreadable exactly
+# while approval is pending.
+unless  = { computed = "control_plane" }
+
+[rule.if]
+class    = "exec"
+approval = true
 
 [[rule]]
-id = "approval-required-action"
-on = "action"
-surface = "any"
-match = '.*'
-when = "not_approved"
-action = "require_approval"
-why = "This tool performs an action and needs approval."
+id      = "approval-required-action"
+enabled = true
+result  = "require_approval"
+why     = "This tool performs an action and needs approval."
+
+[rule.if]
+class    = "action"
+approval = true
 
 [[rule]]
 id      = "repeat"

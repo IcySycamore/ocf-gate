@@ -362,7 +362,7 @@ SECTION_KEYS = ("system", "paths", "limits", "approval", "hooks", "unknown_tool"
 # The three command-limit conditions are gone: each rule states its own number, so a rule and the
 # limit it reads can no longer be separated into two files where only one of them is edited.
 CONDITION_KEYS = ("fact", "is_set", "is", "listed_in", "content_matches", "computed")
-WHEN_VALUES = ("always", "not_approved", "approved", "enforced", "not_enforced")
+WHEN_VALUES = ("always", "enforced")
 SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
 ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
 COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
@@ -374,7 +374,6 @@ COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
 # meaning when no tool is being called.
 SOFT_OCCASIONS = ("session-start", "ask", "plan", "act", "answer")
 RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
-             "exempt_when_listed",
              # The newer shape. Both are accepted while the policy is converted rule by rule.
              "enabled", "kind", "label", "result", "if", "verify")
 
@@ -1160,17 +1159,19 @@ def condition_holds(context, condition):
 
 
 def when_holds(context, when):
+    """Whether the older `when` gate holds. An unknown value raises rather than not firing.
+
+    Not firing is the quiet answer, and for the self-protection rules it is the wrong one: the rule
+    would stop governing while the file it guards stays editable. Raising sends the call through the
+    hook's fail-safe, which denies and prints the value that was not understood.
+    """
     if when in (None, "always"):
         return True
-    if when == "not_approved":
-        return context.needs_approval
-    if when == "approved":
-        return context.enabled and not context.needs_approval
     if when == "enforced":
         return context.enabled
-    if when == "not_enforced":
-        return not context.enabled
-    raise OcfError("policy", "unknown when value %r" % when)
+    raise OcfError("policy", "unknown when %r; the engine knows %s. The approval rules are written "
+                             "as `approval = true` inside rule.if now."
+                             % (when, ", ".join(WHEN_VALUES)))
 
 
 def filter_condition(context, condition, values, keep):
@@ -1244,6 +1245,7 @@ FLAT_CONDITIONS = {
         re.search(value, context.raw_json + "\n" + context.content, re.I | re.S) is not None,
     "environment_declared": lambda context, value:
         bool(context.facts.get("stack_env", "").strip()) == as_bool(value),
+    "approval": lambda context, value: as_bool(value) == context.needs_approval,
     "computed": lambda context, value: bool(context.computed.get(value)),
 }
 
@@ -1266,21 +1268,17 @@ VALUE_CANDIDATE_SOURCE = {
 FLAT_FACT_KEYS = ("fact", "is", "is_not", "is_set")
 
 
-def evaluate_rule_v2(context, rule):
-    """Evaluate a rule written in the newer shape, and return a verdict dict when it fires.
+def evaluate_conditions(context, rule, conditions):
+    """Return the matching candidates when every condition holds, else None.
 
-    Soft rules are never evaluated: they are guidance for the model and live in the instructions the
-    hook injects, so the gate has no verdict to give about them.
+    One evaluator for both halves of a rule. `unless` is the same question asked with the opposite
+    answer, so a second implementation of "do these conditions hold" is exactly the way the two drift
+    apart - and they had: `unless` was read by the older rule shape and ignored by this one, so a rule
+    moved to the newer shape silently lost its exception.
     """
-    if not as_bool(rule.get("enabled", True)):
-        return None
-    if str(rule.get("kind", "hard")).strip().lower() == "soft":
-        return None
-    conditions = rule.get("if") or {}
     fact_part = {key: conditions[key] for key in FLAT_FACT_KEYS if key in conditions}
     if fact_part and not condition_holds(context, fact_part):
         return None
-    candidates = []
     value_conditions = [name for name in conditions if name in FLAT_VALUE_CONDITIONS]
     pool = []
     for name in value_conditions:
@@ -1288,6 +1286,7 @@ def evaluate_rule_v2(context, rule):
         for value in (source(context) if source else context.surface("any")):
             if value not in pool:
                 pool.append(value)
+    candidates = []
     for value in (pool if value_conditions else context.surface("any")):
         if all(FLAT_VALUE_CONDITIONS[name](context, conditions[name], value)
                for name in value_conditions):
@@ -1302,9 +1301,28 @@ def evaluate_rule_v2(context, rule):
             raise OcfError("policy", "rule %r: unknown condition %r" % (rule.get("id"), name))
         if not test(context, spec):
             return None
+    return candidates or [context.tool]
+
+
+def evaluate_rule_v2(context, rule):
+    """Evaluate a rule written in the newer shape, and return a verdict dict when it fires.
+
+    Soft rules are never evaluated: they are guidance for the model and live in the instructions the
+    hook injects, so the gate has no verdict to give about them.
+    """
+    if not as_bool(rule.get("enabled", True)):
+        return None
+    if str(rule.get("kind", "hard")).strip().lower() == "soft":
+        return None
+    candidates = evaluate_conditions(context, rule, rule.get("if") or {})
+    if candidates is None:
+        return None
+    exception = rule.get("unless")
+    if isinstance(exception, dict) and exception:
+        if evaluate_conditions(context, rule, exception) is not None:
+            return None
     return {"id": rule.get("id", "unnamed"), "action": rule.get("result", "deny"),
-            "why": rule.get("why", ""), "hit": candidates[0] if candidates else context.tool,
-            "rule": rule}
+            "why": rule.get("why", ""), "hit": candidates[0], "rule": rule}
 
 
 def evaluate_rule(context, rule):
@@ -1345,15 +1363,13 @@ def evaluate_rule(context, rule):
             hits.append(value)
     if not hits:
         return None
-    # `exempt_when_listed` is the same value-scoped test as `unless: {listed_in: ...}`, so it is not a
-    # third code path. All of them become one list of (condition, keep) and run through one evaluator;
-    # two implementations of "is this candidate excused" is exactly how they drift apart.
+    # only_if and unless are the same value-scoped test asked with opposite polarity, so they become
+    # one list of (condition, keep) and run through one evaluator. Two implementations of "is this
+    # candidate excused" is exactly how they drift apart.
     conditions = []
     for key, keep in (("only_if", True), ("unless", False)):
         if rule.get(key):
             conditions.append((rule[key], keep))
-    if rule.get("exempt_when_listed"):
-        conditions.append(({"listed_in": rule["exempt_when_listed"]}, False))
     for condition, keep in conditions:
         hits = filter_condition(context, condition, hits, keep)
         if not hits:
