@@ -17,10 +17,10 @@
 #   fact          = "<name>", is_set = true    a fact is non-empty
 #   listed_in     = "<file>"                   the surface value matches a line in that file
 #   content_matches = "<regex>"                the tool's content or raw tool_input matches
-#   length_over   = "<limit key>"              the command is longer than that limit
-#   statements_over = "<limit key>"            the command has more statements than that limit
-#   repeats_at_least = "<limit key>"           the command was already run that many times
 #   computed      = "<name>"                   a named flag computed in code (see below)
+#
+# Thresholds are not in this list: a rule that needs a number states the number itself
+# (`command_length_over = 400`), so the rule and its limit cannot drift into two files.
 #
 # Computed flags the engine provides:
 #   control_plane  every statement invokes this orchestrator's own entry script by its full relative
@@ -58,9 +58,8 @@ post_tool_use = true
 
 [limits]
 # Read on every invocation, so changes apply without reloading the window.
-max_cmd_len = 400
-max_cmd_stmts = 3
-max_cmd_repeat = 3
+# The command-length, statement and repeat ceilings are not here: each rule carries its own number,
+# so there is one place to look. This is what is left, the failure budget of the workflow itself.
 fail_budget = 2
 
 [approval]
@@ -72,9 +71,6 @@ min_reason_len = 8
 [unknown_tool]
 # Applied only outside allowed_states. allow | ask | deny
 action = "ask"
-
-[self_authorization]
-executable_extensions = [".ps1", ".psm1", ".sh", ".bash", ".bat", ".cmd", ".py", ".js", ".rb", ".pl"]
 
 [selftest]
 # A canary proves the gate is alive. Each case runs through the REAL hook entry point, so a gate that

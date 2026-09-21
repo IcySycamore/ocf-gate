@@ -253,13 +253,12 @@ DEFAULT_POLICY = {
     "paths": {
         "state_dir": DEFAULT_STATE_DIR,
     },
-    "limits": {"max_cmd_len": 400, "max_cmd_stmts": 3, "max_cmd_repeat": 3, "fail_budget": 2},
+    "limits": {"fail_budget": 2},
     "approval": {"allowed_states": ["executing", "reporting"], "min_reason_len": 8},
     "hooks": {"enabled": True,
               "session_start": True, "user_prompt": True,
               "pre_tool_use": True, "post_tool_use": True},
     "unknown_tool": {"action": "ask"},
-    "self_authorization": {"executable_extensions": [".ps1", ".sh", ".py"]},
     "tools": {
         "edit": [],
         "exec": [],
@@ -358,11 +357,11 @@ def enabled(policy):
 # Every identifier the interpreter is willing to act on. Kept next to the engine rather than in the
 # policy file, because the point is to check the file against the engine, not against itself.
 SECTION_KEYS = ("system", "paths", "limits", "approval", "hooks", "unknown_tool",
-                "self_authorization", "tools", "selftest", "rule")
+                "tools", "selftest", "rule")
 # `is_set` and `is` sit beside `fact`, not inside it: condition_holds reads them as siblings.
-CONDITION_KEYS = ("fact", "is_set", "is", "listed_in", "content_matches", "length_over",
-                  "statements_over", "repeats_at_least", "computed")
-LIMIT_CONDITIONS = ("length_over", "statements_over", "repeats_at_least")
+# The three command-limit conditions are gone: each rule states its own number, so a rule and the
+# limit it reads can no longer be separated into two files where only one of them is edited.
+CONDITION_KEYS = ("fact", "is_set", "is", "listed_in", "content_matches", "computed")
 WHEN_VALUES = ("always", "not_approved", "approved", "enforced", "not_enforced")
 SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
 ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
@@ -409,7 +408,6 @@ def policy_findings(policy):
         if key not in DEFAULT_POLICY["tools"]:
             problems.append("[tools] unknown class %r; the engine knows %s"
                             % (key, ", ".join(sorted(DEFAULT_POLICY["tools"]))))
-    known_limits = limits(policy)
     for index, rule in enumerate(policy.get("rule", [])):
         where = "rule %s" % (rule.get("id") or "#%d" % index)
         # Read once, at the top: the per-rule checks below branch on it, and defining it half way
@@ -442,10 +440,7 @@ def policy_findings(policy):
             if kind == "soft":
                 continue
             for name in sorted(rule.get(key) or {}):
-                if name in LIMIT_CONDITIONS and rule[key][name] not in known_limits:
-                    problems.append("%s: %s names %r, which is not a [limits] key"
-                                    % (where, key, rule[key][name]))
-                elif name == "computed" and rule[key][name] not in COMPUTED_FLAGS:
+                if name == "computed" and rule[key][name] not in COMPUTED_FLAGS:
                     problems.append("%s: %s names the computed flag %r; the engine computes %s"
                                     % (where, key, rule[key][name], ", ".join(COMPUTED_FLAGS)))
                 elif name not in CONDITION_KEYS:
@@ -1092,7 +1087,6 @@ class Context(object):
         self.state = read_state(root, policy)
         self.enabled = enabled(policy)
         self.needs_approval = approval_needed(policy, self.state)
-        self.limits = limits(policy)
         self.tool = payload.get("tool_name") or ""
         self.klass = tool_class(policy, self.tool)
         self.command = extract_command(payload, policy, self.tool)
@@ -1160,13 +1154,6 @@ def condition_holds(context, condition):
     if "content_matches" in condition:
         return re.search(condition["content_matches"], context.raw_json + "\n" + context.content,
                          re.I | re.S) is not None
-    if "length_over" in condition:
-        return len(context.command) > int(context.limits.get(condition["length_over"], 0))
-    if "statements_over" in condition:
-        return len(statements(context.command)) > int(context.limits.get(condition["statements_over"], 0))
-    if "repeats_at_least" in condition:
-        threshold = int(context.limits.get(condition["repeats_at_least"], 0))
-        return command_repeat_count(context.root, context.policy, context.command) >= threshold
     if "computed" in condition:
         return bool(context.computed.get(condition["computed"]))
     raise OcfError("policy", "unknown condition key(s): %s" % ", ".join(sorted(condition)))

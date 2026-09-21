@@ -485,14 +485,18 @@ def check_policy_vocabulary():
     probe = json.loads(json.dumps(policy))
     probe["rule"] = list(probe.get("rule", [])) + [
         {"id": "probe-unknown-identifiers", "on": "not_a_class", "surface": "not_a_surface",
-         "action": "deny", "only_if": {"not_a_condition": 1, "length_over": "not_a_limit"}},
+         "action": "deny", "only_if": {"not_a_condition": 1, "computed": "not_a_flag",
+                                        "length_over": "not_a_limit"}},
         {"id": "probe-soft-without-occasion", "kind": "soft", "result": "a sentence", "if": {}},
         {"id": "probe-soft-without-a-sentence", "kind": "soft", "if": {"occasion": "answer"}},
         {"id": "probe-soft-on-a-tool-condition", "kind": "soft", "result": "a sentence",
          "if": {"occasion": "answer", "class": "exec"}},
     ]
     found = "; ".join(text for _, text in ocf.policy_findings(probe))
-    for needle in ("not_a_class", "not_a_surface", "not_a_condition", "not_a_limit",
+    # Not the value but the key: `length_over` is no longer a condition the engine knows, since the
+    # thresholds moved into the rules themselves, so its value is never reached. A policy edited
+    # against the old vocabulary has to be reported, or it would quietly enforce nothing.
+    for needle in ("not_a_class", "not_a_surface", "not_a_condition", "not_a_flag", "length_over",
                    "probe-soft-without-occasion", "probe-soft-without-a-sentence",
                    "probe-soft-on-a-tool-condition"):
         assert needle in found, ("the validator did not report %r, and a validator that reports "
