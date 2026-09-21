@@ -883,6 +883,35 @@ def test_hooks_wiring():
     check_hooks_wiring()
 
 
+def check_line_endings_are_normalised():
+    """A file written with CRLF must still compare equal to what this program would write.
+
+    The failure this guards is quiet and platform-specific: git's autocrlf hands out CRLF on Windows,
+    the program writes LF, and the comparison that decides "is this generated file already current"
+    then never matches. The visible symptom is a reload that always says it rewrote something, which
+    makes a real change indistinguishable from the checkout's line endings.
+    """
+    ocf = load_ocf_module()
+    root = build_root({"state": "executing"})
+    try:
+        policy, _ = ocf.load_policy(root)
+        target = os.path.join(root, ocf.HOOKS_REL)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        rendered = ocf.render_hooks_json(policy)
+        with open(target, "w", encoding="utf-8", newline="") as handle:
+            handle.write(rendered.replace("\n", "\r\n"))
+        reported = ocf.write_hooks(root, policy)
+        assert "already matches" in reported, (
+            "a CRLF copy of the current wiring was treated as out of date, so the check that a "
+            "generated file is current cannot pass on Windows: %r" % reported)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_line_endings_are_normalised():
+    check_line_endings_are_normalised()
+
+
 def check_rule_text_is_flattened():
     """A soft rule's text reaches the model as one line, with the spaces the human meant and no others.
 
@@ -920,6 +949,7 @@ CHECKS = (
     ("new-rule-shape", test_new_rule_shape),
     ("soft-rules-never-gate", test_soft_rules_never_gate),
     ("hooks-wiring", test_hooks_wiring),
+    ("line-endings", test_line_endings_are_normalised),
     ("rule-text-flattened", test_rule_text_is_flattened),
     ("generated-instructions", test_generated_instructions),
     ("markdown-links", test_markdown_links),

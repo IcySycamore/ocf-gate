@@ -191,7 +191,15 @@ def out(line=""):
 
 
 def read_text(path):
-    """Return the file's text with any BOM stripped, or None when it does not exist."""
+    """Return the file's text with any BOM stripped and line endings normalised, or None if absent.
+
+    Line endings are normalised on the way in. This program writes "\n" - see write_text - and it
+    compares what it read against what it would write to decide whether a generated file is already
+    current. On Windows, git's autocrlf hands out CRLF, so those comparisons never matched: reload
+    reported "rewrote" every single time and the "already matches" branch was unreachable. Harmless
+    looking, and it hid a real difference: a human reading "rewrote" cannot tell a real change from the
+    checkout's line endings.
+    """
     try:
         with open(path, "r", encoding="utf-8", errors="replace", newline="") as handle:
             data = handle.read()
@@ -199,6 +207,7 @@ def read_text(path):
         return None
     except OSError as exc:
         raise OcfError("environment", "cannot read %s: %s" % (path, exc))
+    data = data.replace("\r\n", "\n").replace("\r", "\n")
     if data.startswith("\ufeff"):
         data = data[1:]
     return data
