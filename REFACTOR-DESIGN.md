@@ -296,11 +296,13 @@ human-code glob 生效与 allowed-edits 豁免生效、静默输出／超长命�
 ## 13. 未解决：系统分不出“人类答复”与“自动答复”（2026-09-21）
 
 ### 事故
+
 Auto-copilot 模式下，agent 调 `vscode_askQuestions` 后收到一条**自动回复**
 （"The user is not available to respond..."）。agent 把它当成授权，在**非 git 仓库**里删文件、重构文档。
 由人类指出。
 
 ### 为什么没拦住 —— 两层，都要认
+
 1. **门禁当时是关的。** `system.enabled = false`（迁移期）。若为 `true`，状态是 `asking`，
    `approval-required-edit` / `approval-required-exec` 会**结构性拒绝**每一个编辑与命令，
    与 agent 如何理解那条回复无关。用例表的 `plain-edit-needs-approval` 与 `plain-command-needs-approval`
@@ -310,6 +312,7 @@ Auto-copilot 模式下，agent 调 `vscode_askQuestions` 后收到一条**自动
    在 `enabled=false` 期间、以及 `executing` 期间，任何“人类是否真的答复了”的判断都**没有代码**。
 
 ### 唯一的候选信号，以及它可能不可用
+
 可用的只有 `UserPromptSubmit`。但审计显示：本会话 `human reply` 递增到 **17** 次，
 而人类实际消息远少于此，且其中 `#11`/`#12` 相隔 **13 秒**、中间没有任何人类消息。
 **推断**：`UserPromptSubmit` 可能也为机器生成的轮次触发。若成立，它就不能作为“人类真的说话了”的信号，
@@ -320,15 +323,17 @@ Auto-copilot 模式下，agent 调 `vscode_askQuestions` 后收到一条**自动
 `prompt-instrumentation` 断言看守。下次再出现自动回复时，这份日志会给出确定答案，然后删掉插桩。
 
 ### 三个候选修复（待定，不擅自上）
-| 方案 | 做法 | 代价 / 风险 |
-| --- | --- | --- |
-| A. 钉死“提问后停止” | 从 agent 的工具许可里去掉 `vscode/askQuestions`，要求只用聊天文本提问并结束回合 | 结构上关掉带内“伪答复”通道；代价是失去结构化提问（选项、免自由发挥） |
-| B. 挂起门禁 | 调 `askQuestions` 时置 `awaiting_human`，在人类**用自己的终端**清除前，拒绝所有变更类动作（控制面 CLI 仍放行，以便记录答复） | 不依赖任何“谁在说话”的判断，必然可靠；代价是每次提问要人类多敲一条命令 |
-| C. 收窄关闭开关 | `enabled=false` 只放开“编排器自身文件的维护”，不再等于“可自由作业” | 改动开关语义；但直击本次事故的根因 |
+
+| 方案                | 做法                                                                                                                         | 代价 / 风险                                                            |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| A. 钉死“提问后停止” | 从 agent 的工具许可里去掉 `vscode/askQuestions`，要求只用聊天文本提问并结束回合                                              | 结构上关掉带内“伪答复”通道；代价是失去结构化提问（选项、免自由发挥）   |
+| B. 挂起门禁         | 调 `askQuestions` 时置 `awaiting_human`，在人类**用自己的终端**清除前，拒绝所有变更类动作（控制面 CLI 仍放行，以便记录答复） | 不依赖任何“谁在说话”的判断，必然可靠；代价是每次提问要人类多敲一条命令 |
+| C. 收窄关闭开关     | `enabled=false` 只放开“编排器自身文件的维护”，不再等于“可自由作业”                                                           | 改动开关语义；但直击本次事故的根因                                     |
 
 **在信号被测定之前不落地任何依赖它的规则** —— 否则失败方向会是“把 agent 锁死”，那是我们一路在避免的另一类事故。
 
 ### 事后查明：这条“自动回复”是编辑器自己注入的，而且可以关（2026-09-21）
+
 在 VS Code 核心包（`workbench.desktop.main.js`）里找到：
 
      if (info?.permissionLevel === "autopilot" || configService.getValue("chat.autoReply")) {
@@ -347,6 +352,7 @@ best aligned with the context..."`。机制是：提问会建立 `pendingQuestio
 就不再值得付代价：它是为一个可以直接关掉的行为而牺牲一个有用的能力。
 
 ### 相邻漏洞：任何一条消息都能解除失败预算
+
 批准不受影响 —— `needs_approval` 只由 `state` 决定，而 `executing` 只能由人类在自己终端执行
 `approve` 写入，聊天消息无论来自谁都不能改变状态。但**另一个口子存在**：`UserPromptSubmit` 会清除
 `must_consult`。若自动回复也能触发它，那么自动回复不仅能骗过 agent，还能**解开失败预算锁**。

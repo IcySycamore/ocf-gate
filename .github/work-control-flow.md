@@ -231,6 +231,12 @@ can the gate: an injected reply and a human one both arrive as UserPromptSubmit.
 **prerequisite, not a rule**: keep the permission level out of autopilot, and set `chat.autoReply` to
 false in user settings. With both off, a question genuinely waits for the human. See section 10.
 
+The permission levels are `chat.permissions.default`, `.assisted`, `.autoApprove` and `.autopilot`;
+only `autopilot` triggers the injection. So **Auto-approve plus `"chat.autoReply": false` is the working
+configuration**: commands run without a per-call confirmation prompt, and questions wait for the human.
+Setting `chat.autoReply` alone is NOT enough while the level is still `autopilot`, because the
+triggering condition is an OR.
+
 ## 10. Known limitations
 
 - Failure detection is self-reported: the hook fires after a tool succeeded, so `ocf.py fail` has to
@@ -250,5 +256,9 @@ false in user settings. With both off, a question genuinely waits for the human.
   "the human has replied" is not something any rule can currently establish; it is enforced only by
   turning the injection off in the editor (section 9). Corollary: an injected reply also clears the
   failure budget, because clearing is tied to the same event.
+- Auto-approve does not weaken this gate. `deny` is handled before any approval logic, so nothing can
+  auto-approve past it; a hook answering `ask` also looks protected, by an explicit branch that
+  discards pre-approval when the decision is `ask`. That branch is read from the editor bundle rather
+  than verified end to end, so treat `ask` as a hint and put anything that must hold behind `deny`.
 - Inline agent hooks would scope enforcement to one agent, but they need the chat.useCustomAgentHooks
   setting, and if it is off the gate silently stops working, so the workspace hook stays the default.
