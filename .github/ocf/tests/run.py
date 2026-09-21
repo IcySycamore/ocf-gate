@@ -438,9 +438,68 @@ def test_plan_template():
     check_plan_template()
 
 
+def check_policy_vocabulary():
+    """An unknown identifier must be reported, and the shipped policy must be free of them.
+
+    The failure this guards is silent by construction: a misspelled `on` class or limit key does not
+    raise, it just stops the rule from matching, so the gate keeps running while enforcing less than
+    the file says. Proving the validator rejects one matters as much as proving the shipped file is
+    clean, because a validator that reports nothing looks exactly like a correct policy.
+    """
+    ocf = load_ocf_module()
+    policy, _ = ocf.load_policy(REPO)
+    shipped = ocf.policy_findings(policy)
+    assert not shipped, ("the shipped policy carries identifiers the engine does not know: %s"
+                         % "; ".join(text for _, text in shipped))
+    probe = json.loads(json.dumps(policy))
+    probe["rule"] = list(probe.get("rule", [])) + [
+        {"id": "probe-unknown-identifiers", "on": "not_a_class", "surface": "not_a_surface",
+         "action": "deny", "only_if": {"not_a_condition": 1, "length_over": "not_a_limit"}},
+    ]
+    found = "; ".join(text for _, text in ocf.policy_findings(probe))
+    for needle in ("not_a_class", "not_a_surface", "not_a_condition", "not_a_limit"):
+        assert needle in found, ("the validator did not report %r, and a validator that reports "
+                                 "nothing cannot fail. Got: %s" % (needle, found or "(nothing)"))
+    # Reporting is not enough on its own: the hook used to receive the policy warnings and never
+    # print them, so a broken policy was invisible exactly where it mattered. Drive the real entry
+    # point over a policy carrying an unknown identifier and require the name to come back out.
+    root = tempfile.mkdtemp(prefix="ocf-vocabulary-")
+    try:
+        os.makedirs(os.path.join(root, ".github", "ocf"))
+        os.makedirs(os.path.join(root, ".orchestrator"))
+        with open(POLICY, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        text += ("\n[[rule]]\nid = \"probe-unknown\"\non = \"not_a_class\"\nsurface = \"command\"\n"
+                 "match = \".*\"\naction = \"deny\"\n")
+        with open(os.path.join(root, ".github", "ocf", "policy.toml"), "w", encoding="utf-8") as handle:
+            handle.write(text)
+        env = dict(os.environ)
+        env["OCF_ROOT"] = root
+        payload = {"hook_event_name": "SessionStart", "session_id": "abcdef1234567890"}
+        proc = subprocess.run([sys.executable, ENTRY, "hook"], input=json.dumps(payload).encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+        emitted = proc.stdout.decode("utf-8", "replace")
+        # The marker, not the bare name: the selftest text also prints [policy], so asserting on
+        # "not_a_class" alone would pass even with the notification path removed. "OCF [policy]" is
+        # produced only by notices_text, which is the code that used to drop the warning.
+        assert "OCF [policy]" in emitted, (
+            "the hook dropped the policy finding, so a policy that enforces less than it says is "
+            "invisible on the hook path; emitted: %r" % emitted[:300])
+        assert "not_a_class" in emitted, (
+            "the notification did not name the offending identifier, so it cannot be acted on; "
+            "emitted: %r" % emitted[:300])
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_policy_vocabulary():
+    check_policy_vocabulary()
+
+
 CHECKS = (
     ("repo-ascii", test_repo_is_ascii),
     ("plan-template", test_plan_template),
+    ("policy-vocabulary", test_policy_vocabulary),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),

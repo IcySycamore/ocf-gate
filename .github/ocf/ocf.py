@@ -278,6 +278,100 @@ def enabled(policy):
 
 
 # ---------------------------------------------------------------------------
+# Policy vocabulary
+# ---------------------------------------------------------------------------
+
+# Every identifier the interpreter is willing to act on. Kept next to the engine rather than in the
+# policy file, because the point is to check the file against the engine, not against itself.
+SECTION_KEYS = ("system", "paths", "limits", "approval", "unknown_tool", "self_authorization",
+                "tools", "selftest", "rule")
+# `is_set` and `is` sit beside `fact`, not inside it: condition_holds reads them as siblings.
+CONDITION_KEYS = ("fact", "is_set", "is", "listed_in", "content_matches", "length_over",
+                  "statements_over", "repeats_at_least", "computed")
+LIMIT_CONDITIONS = ("length_over", "statements_over", "repeats_at_least")
+WHEN_VALUES = ("always", "not_approved", "approved", "enforced", "not_enforced")
+SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
+ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
+COMPUTED_FLAGS = ("control_plane", "invokes_entry")
+RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
+             "exempt_when_listed")
+
+
+def policy_findings(policy):
+    """Report identifiers the engine does not know, as (kind, message) pairs.
+
+    An unknown `on` class, a misspelled limit key, a condition the engine never reads: none of them
+    raises. The rule simply stops matching, so the gate keeps running while enforcing less than the
+    file says. That is the defect class this project keeps meeting, so it is checked rather than
+    hoped for.
+
+    These findings deliberately do NOT travel through load_policy's warnings. Every guard in
+    tests/run.py treats a warning as "the policy did not load cleanly", and a policy holding one
+    unknown key has loaded perfectly well; mixing the two would make those guards fail for the wrong
+    reason, which is its own silent defect.
+    """
+    problems = []
+    for key in sorted(policy):
+        if key not in SECTION_KEYS:
+            problems.append("unknown policy section [%s]" % key)
+    for key in sorted(policy.get("limits", {})):
+        if key not in DEFAULT_POLICY["limits"]:
+            problems.append("[limits] unknown key %r; the engine knows %s"
+                            % (key, ", ".join(sorted(DEFAULT_POLICY["limits"]))))
+    for key in sorted(policy.get("tools", {})):
+        if key not in DEFAULT_POLICY["tools"]:
+            problems.append("[tools] unknown class %r; the engine knows %s"
+                            % (key, ", ".join(sorted(DEFAULT_POLICY["tools"]))))
+    known_limits = limits(policy)
+    for index, rule in enumerate(policy.get("rule", [])):
+        where = "rule %s" % (rule.get("id") or "#%d" % index)
+        for key in sorted(rule):
+            if key not in RULE_KEYS:
+                problems.append("%s: unknown key %r; the engine reads %s"
+                                % (where, key, ", ".join(RULE_KEYS)))
+        for name in [item.strip() for item in str(rule.get("on", "any")).split(",")]:
+            if name and name not in CLASS_ORDER + ("any", "unknown"):
+                problems.append("%s: unknown on class %r; the engine knows %s"
+                                % (where, name, ", ".join(CLASS_ORDER + ("any", "unknown"))))
+        surface = rule.get("surface", "any")
+        if surface not in SURFACE_NAMES:
+            problems.append("%s: unknown surface %r; the engine knows %s"
+                            % (where, surface, ", ".join(SURFACE_NAMES)))
+        when = rule.get("when")
+        if when is not None and when not in WHEN_VALUES:
+            problems.append("%s: unknown when %r; the engine knows %s"
+                            % (where, when, ", ".join(WHEN_VALUES)))
+        action = rule.get("action")
+        if action is not None and action not in ACTION_VALUES:
+            problems.append("%s: unknown action %r; the engine knows %s"
+                            % (where, action, ", ".join(ACTION_VALUES)))
+        for key in ("only_if", "unless"):
+            for name in sorted(rule.get(key) or {}):
+                if name in LIMIT_CONDITIONS and rule[key][name] not in known_limits:
+                    problems.append("%s: %s names %r, which is not a [limits] key"
+                                    % (where, key, rule[key][name]))
+                elif name == "computed" and rule[key][name] not in COMPUTED_FLAGS:
+                    problems.append("%s: %s names the computed flag %r; the engine computes %s"
+                                    % (where, key, rule[key][name], ", ".join(COMPUTED_FLAGS)))
+                elif name not in CONDITION_KEYS:
+                    problems.append("%s: %s holds the unknown condition key %r; the engine reads %s"
+                                    % (where, key, name, ", ".join(CONDITION_KEYS)))
+    return [("policy", text) for text in problems]
+
+
+def policy_notices(policy, warnings):
+    """The (kind, text) pairs a hook turn should carry, so a policy problem is never invisible."""
+    return list(warnings) + policy_findings(policy)
+
+
+def notices_text(policy, warnings):
+    notices = policy_notices(policy, warnings)
+    if not notices:
+        return ""
+    return "\n" + "\n".join("OCF [%s] %s" % (kind, text) for kind, text in notices)
+
+
+# ---------------------------------------------------------------------------
 # Runtime state
 # ---------------------------------------------------------------------------
 
@@ -898,11 +992,11 @@ def cmd_hook(root, argv):
             emit_pretooluse(action, reason)
             return 0
         if event == "UserPromptSubmit":
-            text = handle_prompt(root, policy, payload)
+            text = handle_prompt(root, policy, payload) + notices_text(policy, warnings)
             emit_context("UserPromptSubmit", text)
             return 0
         if event in ("SessionStart", "SessionStartReload"):
-            text = handle_session_start(root, policy)
+            text = handle_session_start(root, policy) + notices_text(policy, warnings)
             emit_context("SessionStart", text)
             return 0
         if event == "PostToolUse":
@@ -1189,6 +1283,7 @@ def run_selftest(root, policy):
         findings.append(("policy", "%s not found, the strict fallback policy is in force" % POLICY_REL))
     else:
         findings.append(("ok", "%s parsed" % POLICY_REL))
+    findings.extend(policy_findings(policy))
     hooks_text = read_text(os.path.join(root, HOOKS_REL))
     if hooks_text is None:
         findings.append(("environment", "%s not found; no hook events will arrive" % HOOKS_REL))
