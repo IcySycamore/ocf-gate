@@ -807,7 +807,8 @@ def append_exec_log(root, policy, command):
 
 
 # ---------------------------------------------------------------------------
-# Lists (human-code, allowed-edits). Entries are paths or globs; '#' starts a comment.
+# The protected list. Entries are paths or globs; '#' starts a comment. Read by listed_in, which is
+# the one place a path is judged against it, for both the editing tools and the terminal.
 # ---------------------------------------------------------------------------
 
 def load_list(root, relative):
@@ -1328,8 +1329,8 @@ def evaluate_rule_v2(context, rule):
 def evaluate_rule(context, rule):
     """Return a verdict dict when the rule fires, else None.
 
-    Conditions split in two. Context-scoped ones (fact, computed, length_over, content_matches and
-    friends) are true or false for the call as a whole. Value-scoped ones (listed_in) must be judged
+    Conditions split in two. Context-scoped ones (fact, computed, content_matches and friends) are true
+    or false for the call as a whole. Value-scoped ones (listed_in) must be judged
     per candidate value, because a rule is asking "is THIS path the one I care about". Judging them as
     a union of the whole batch makes one qualifying path decide the fate of every other path, which
     both over-blocks and reports a target that is not the offender.

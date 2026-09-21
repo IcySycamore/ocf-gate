@@ -14,7 +14,8 @@ and the human is the only approver. Read [work-control-flow.md](../work-control-
 The entry point, the command surface and the permission split live in section 2 of
 [work-control-flow.md](../work-control-flow.md); a second copy here would only be a copy that goes
 stale. In short: the agent reads state and advances within its allowed targets, and only the human
-enters executing. Never hand-edit state, facts, journal.log, human-code.txt or allowed-edits.txt.
+enters executing. Never hand-edit state, facts, journal.log or exec.log: only the human changes those,
+and only the human changes a path on the protected list at `.github/protected.txt`.
 
 ## Main loop
 

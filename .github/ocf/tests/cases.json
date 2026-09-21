@@ -278,7 +278,7 @@
     "expect_rule": "default"
   },
   {
-    "id": "human-code-path-blocked",
+    "id": "protected-path-blocked",
     "why": "A glob entry in the protected list must protect the whole subtree.",
     "state": "executing",
     "human_code": ["# comment line", "docs/**"],

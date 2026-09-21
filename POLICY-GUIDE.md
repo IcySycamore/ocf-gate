@@ -2,13 +2,24 @@
 
 面向人类读者。讲清 **`.github/ocf/policy.toml` 怎么读、怎么改、改完怎么验**。
 
+> **警告：本文件第 4 节起的词表表格已经过期**（2026-09-22 起）。
+> 它们描述的是旧规则形状（`on`/`surface`/`match`/`when`/`action`），其中被列出的
+> `exempt_when_listed`、`length_over`、`statements_over`、`repeats_at_least` 已从引擎中删除，
+> 规则名 `human-code` / `human-code-write` 已合并为 `protected-file`，
+> `human-code-clear` 已更名为 `protected-list-clear`，`[limits]` 只剩 `fail_budget`。
+>
+> **权威出处只有两处**：`policy.toml` 自己的头部注释（词表，且由 `policy_findings` 对着代码校验），
+> 以及 `.github/work-control-flow.md`（行为）。本文件里与它们冲突的地方，以那两处为准。
+> 重复一份词表就会再过期一次 —— 这段表格建议删掉，等你决定。
+
 ---
 
 ## 1. 三条铁律
 
-1. 按顺序解析
-2. **解析失败 将采取默认的最激进的配置策略**
-3. 改 `policy.toml` 需要人类手工编辑，或先把 `system.enabled` 设为 `false`。
+1. 按顺序解析，首个命中即生效
+2. 解析失败 将采取默认的最激进配置策略
+3. 改 `policy.toml` 需要人类手工编辑；改完跑 `python .github/ocf/ocf.py reload`
+   把配置生成进常驻契约与 hooks 接线（该命令人类专属）。
 
 ---
 

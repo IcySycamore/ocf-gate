@@ -110,7 +110,8 @@ Exec-class, in order:
   advance to a target outside the agent list.
 - approval: a command that is not control-plane while the state is not executing or reporting.
   Skipped when `system.enabled` is false.
-- command too long, over max_cmd_len. Too many statements, over max_cmd_stmts, counted after blanking
+- command too long, over the ceiling the rule states (400). Too many statements, over 3, counted after
+  blanking
   quoted spans and `@{ }` hashtable literals, because a semicolon inside a string or between hashtable
   entries is not a separator. Everything else, parentheses and script blocks included, still counts.
 - silenced output: Out-Null, `$null`, /dev/null, --quiet, -Quiet, -WindowStyle Hidden.
@@ -120,7 +121,7 @@ Exec-class, in order:
 - destructive: rm -rf on a root path, git push --force, drop table, git reset --hard, Remove-Item
   -Recurse -Force.
 - write target: a write-ish command touching a self-protected or human-protected path.
-- going in circles: the same command about to run for the max_cmd_repeat plus one-th time, answered ask.
+- going in circles: the same command about to run for the fourth time, answered ask.
 
 Control-plane is recognised only when every statement invokes the control script by its full relative
 path, so merely mentioning the name does not inherit the exemption.

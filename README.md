@@ -23,10 +23,11 @@ hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你�
 | **一份实现**           | 只有 `.github/ocf/ocf.py`（Python 3，标准库），跨平台语义唯一，不存在两份实现分叉                     |
 | **规则是数据**         | 门禁规则全在 [`policy.toml`](.github/ocf/policy.toml)，改规则不改代码，首个命中即生效                 |
 | **批准不靠说话**       | 进 `executing` 只能由人类在自己终端执行 `approve`；机器跑它会被拦（残余绕过面见「设计取舍」）         |
-| **人类代码受保护**     | `human-code.txt` 清单内的路径机器改不了，只能人类 `allow` 逐路径授权                                  |
-| **门禁不可自改**       | 规则文档、策略、hooks、agent、prompt 与运行时状态全部受自保护；改一个文件忘了改保护清单会**测试失败** |
+| **受保护清单**         | `.github/protected.txt` 里的路径机器改不了（工具与终端同一规则管）；它自己也在自己的条目里，且**进版本库** —— 不进版本库的清单在新克隆里等于不存在 |
+| **门禁不可自改**       | 规则文档、策略、hooks、agent、prompt、受保护清单与运行时状态全部受自保护；改一个文件忘了改保护清单会**测试失败** |
 | **失效可被发现**       | 自检含金丝雀，走真实 hook 入口；门禁若静默停止拦截，自检与测试会失败而不是看起来健康                  |
-| **阈值免重载可调**     | `[limits]` 每次调用重读，改完立即生效                                                                 |
+| **规则分软硬**         | 硬规则由 hook 给裁决；软规则无法被代码强制（没人能检查一句话写没写），由 `reload` 写进每次对话都读的常驻契约 |
+| **各项可单独停用**     | `[hooks]` 总开关决定整组装不装（关掉后 VS Code 根本不启动它，不是装作没听见），四个事件各有开关       |
 | **终端可视化**         | 拦长命令、多语句串联、静默输出、交互阻塞；同一命令反复执行转人工确认                                  |
 | **失败预算**           | 连续失败 2 次锁死执行类工具，强制 agent 停下问人类；人类回话即解锁                                    |
 | **永久禁视觉测试**     | 截图/看图工具无条件拦；需要看画面时由人类截图并在下一条消息附上                                       |
@@ -61,12 +62,13 @@ hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你�
 .orchestrator/                       运行时（不打包、自动创建、勿手改）
 ├── state                            当前状态
 ├── facts                            人类提供的要素（key=value）
-├── plan.md                          行动清单（8 个字段）
-├── human-code.txt                   人类代码保护清单（支持 glob）
-├── allowed-edits.txt                人类逐路径授权
+├── plan.md                          行动清单（8 个字段，默认不落盘）
+├── glossary.md                      术语表（菜鸟模式软规则写入）
 ├── journal.log                      审计
 └── exec.log                         命令重复执行记录
 ```
+
+受保护清单不在运行时目录：它在 `.github/protected.txt`，因为它必须进版本库。
 
 注意：**没有** `.orchestrator/config`。开关与阈值都并入 `policy.toml` 了 —— 留一个「看起来像开关」的
 死文件本身就是陷阱。
@@ -98,11 +100,13 @@ hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你�
 # 2) 初始化运行时（幂等）
 python  .github\ocf\ocf.py init      # Windows
 python3 .github/ocf/ocf.py init      # 其他平台
-# 3) 登记本仓库的人类代码保护路径（重要，否则出厂只保护文档与编排器自身）
-python .github\ocf\ocf.py human-code "src/**"
+# 3) 登记本仓库受保护的路径（重要，否则出厂只保护文档与编排器自身）
+python .github\ocf\ocf.py deny "src/**"
 # 4) 自检
 python .github\ocf\ocf.py selftest
-# 5) 重载 VS Code 窗口，让 hooks 生效
+# 5) 把配置生成到产物里（人类专属命令；agent 跑会被拦）
+python .github\ocf\ocf.py reload
+# 6) 重载 VS Code 窗口，让 hooks 生效
 ```
 
 出厂时 `policy.toml` 的 `system.enabled` 是 `false`（门禁关闭，方便先验证）。
@@ -152,10 +156,12 @@ python .github\ocf\ocf.py deny "docs/**"
 | 想改什么          | 怎么改                                                                                                        | 要重载吗 |
 | ----------------- | ------------------------------------------------------------------------------------------------------------- | -------- |
 | **门禁规则**      | 改 [`policy.toml`](.github/ocf/policy.toml) 的 `[[rule]]`。规则是数据，首个命中即生效，豁免放最前、兜底放最后 | 不用     |
-| **阈值**          | 改 `[limits]`（`max_cmd_len` `max_cmd_stmts` `max_cmd_repeat` `fail_budget`）                                 | 不用     |
-| **工具分类**      | 改 `[tools]` 各列表与 `[tools.field]` 的字段路径。新增工具**不必改代码**                                      | 不用     |
-| **门禁开关**      | 改 `[system] enabled`。`false` = 人类交回控制权（跳过批准，允许机器改门禁代码；人类代码保护仍生效）           | 不用     |
-| **自检金丝雀**    | 改 `[selftest.canary]`。金丝雀必须走真实 hook 入口，否则证明不了门禁还活着                                    | 不用     |
+| **阈值**          | 直接改规则里那个数字（如 `command_length_over = 400`）；`[limits]` 只剩 `fail_budget`                         | 不用     |
+| **软规则**        | 改 `kind = "soft"` 的规则文字，然后跑 `reload`，常驻契约里那段话会跟着变                                         | 不用     |
+| **工具分类**      | 改 `[tools]` 各列表与 `[tools.field]` 的字段路径。新增工具**不必改代码**                                          | 不用     |
+| **停用某一项**    | 改 `[hooks]` 的总开关或事件开关，然后 `reload`；事件开关关掉后连程序都不再被启动                                      | 要       |
+| **门禁开关**      | 改 `[system] enabled`。`false` = 维护窗口：只跳过自保护与自授权那几条规则，其余照旧；受保护清单**不再由它管**        | 不用     |
+| **自检金丝雀**    | 改 `[selftest.canary]`。金丝雀必须走真实 hook 入口，否则证明不了门禁还活着                                          | 不用     |
 | **状态机**        | 改 `ocf.py` 的 `STATES` / `transition_gate_names`，并同步 `work-control-flow.md` 第 3 节                      | 不用     |
 | **挂钩事件**      | 改 `.github/hooks/orchestrator.json`。命令串**只用 ASCII 且不含 `$`** —— 外层 shell 会插值                    | **要**   |
 | **文案/规则说明** | 改 `work-control-flow.md`、`copilot-instructions.md`、各 `*.prompt.md` / `*.agent.md`                         | 不用     |
