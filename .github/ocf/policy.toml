@@ -220,7 +220,7 @@ why = "Writing a human-only subcommand into an executable file is self-authoriza
 id = "self-protection-path"
 on = "edit"
 surface = "path"
-match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.orchestrator/(state|facts|human-code\.txt|allowed-edits\.txt|journal\.log|exec\.log)$'
+match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.orchestrator/(state|facts|human-code\.txt|allowed-edits\.txt|journal\.log|exec\.log)$'
 when = "enforced"
 action = "deny"
 why = "The orchestrator's own files. The human edits them by hand, or sets system.enabled = false."
@@ -229,7 +229,7 @@ why = "The orchestrator's own files. The human edits them by hand, or sets syste
 id = "self-protection-write"
 on = "exec"
 surface = "write_target"
-match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.orchestrator/'
+match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.orchestrator/'
 when = "enforced"
 action = "deny"
 why = "A command may not write to the orchestrator's own files."

@@ -298,6 +298,7 @@ PROTECTED_BY_POLICY = (
     ".github/ocf/ocf.py",
     ".github/ocf/policy.toml",
     ".github/work-control-flow.md",
+    ".github/copilot-instructions.md",
     ".github/hooks/orchestrator.json",
     ".github/agents/orchestrator.agent.md",
     ".github/agents/plan-auditor.agent.md",

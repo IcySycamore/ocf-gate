@@ -242,14 +242,14 @@
   },
   {
     "id": "human-code-exempted-by-allow",
-    "why": "allowed-edits.txt is the human's grant and must actually lift the human-code block.",
+    "why": "allowed-edits.txt is the human's grant and must actually lift the human-code block. The path is CONTEXT.md rather than .github/copilot-instructions.md because T9 made that file self-protected, and self-protection outranks the exemption.",
     "state": "executing",
-    "human_code": [".github/copilot-instructions.md"],
-    "allowed_edits": [".github/copilot-instructions.md"],
+    "human_code": ["CONTEXT.md"],
+    "allowed_edits": ["CONTEXT.md"],
     "payload": {
       "tool_name": "create_file",
       "tool_input": {
-        "filePath": ".github/copilot-instructions.md",
+        "filePath": "CONTEXT.md",
         "content": "text\n"
       }
     },
@@ -321,17 +321,17 @@
   },
   {
     "id": "batch-edit-not-over-blocked",
-    "why": "Regression: a listed_in precondition judged over the whole batch let one human-code path (already allowed) drag every other path into the denial.",
+    "why": "Regression: a listed_in precondition judged over the whole batch let one human-code path (already allowed) drag every other path into the denial. The path is CONTEXT.md because T9 made .github/copilot-instructions.md self-protected, which is a different rule doing a different job.",
     "state": "executing",
-    "human_code": [".github/copilot-instructions.md"],
-    "allowed_edits": [".github/copilot-instructions.md"],
+    "human_code": ["CONTEXT.md"],
+    "allowed_edits": ["CONTEXT.md"],
     "payload": {
       "tool_name": "multi_replace_string_in_file",
       "tool_input": {
         "replacements": [
           { "filePath": "src/app.py", "oldString": "a", "newString": "b" },
           {
-            "filePath": ".github/copilot-instructions.md",
+            "filePath": "CONTEXT.md",
             "oldString": "a",
             "newString": "b"
           }
@@ -340,6 +340,22 @@
     },
     "expect": "allow",
     "expect_rule": "default"
+  },
+  {
+    "id": "copilot-instructions-is-self-protected",
+    "why": "T9: the file carrying the standing contract was listed as human code and simultaneously exempted in allowed-edits.txt, so the net effect was permission for the machine to rewrite it. It is self-protected now, and the exemption cannot lift that, because self-protection-path comes earlier in the rule order. The exemption is left in place on purpose: this case proves it does not matter.",
+    "state": "executing",
+    "human_code": [".github/copilot-instructions.md"],
+    "allowed_edits": [".github/copilot-instructions.md"],
+    "payload": {
+      "tool_name": "create_file",
+      "tool_input": {
+        "filePath": ".github/copilot-instructions.md",
+        "content": "text\n"
+      }
+    },
+    "expect": "deny",
+    "expect_rule": "self-protection-path"
   },
   {
     "id": "batch-edit-names-the-offending-path",
