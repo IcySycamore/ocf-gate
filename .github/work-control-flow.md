@@ -231,11 +231,14 @@ can the gate: an injected reply and a human one both arrive as UserPromptSubmit.
 **prerequisite, not a rule**: keep the permission level out of autopilot, and set `chat.autoReply` to
 false in user settings. With both off, a question genuinely waits for the human. See section 10.
 
-The permission levels are `chat.permissions.default`, `.assisted`, `.autoApprove` and `.autopilot`;
-only `autopilot` triggers the injection. So **Auto-approve plus `"chat.autoReply": false` is the working
-configuration**: commands run without a per-call confirmation prompt, and questions wait for the human.
-Setting `chat.autoReply` alone is NOT enough while the level is still `autopilot`, because the
-triggering condition is an OR.
+The selected level lives in `chat.permissions.default`, and the picker labels the ones a build offers as
+**Default permissions** (`.default`), **Allow all** (`.autoApprove`) and **Autopilot (Preview)**
+(`.autopilot`); only autopilot triggers the injection. Default permissions is described as "Use
+configured approval settings", so the granular `chat.tools.*` keys are honoured there - you do not have
+to pick Allow all in order to control approvals. So the working configuration is **Default permissions
+(or Allow all) plus `"chat.autoReply": false`**: questions then wait for the human, and whether commands
+prompt is left to the approval settings you configure. Setting `chat.autoReply` alone is NOT enough
+while the level is still autopilot, because the triggering condition is an OR.
 
 ## 10. Known limitations
 
