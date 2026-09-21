@@ -59,7 +59,7 @@ TRANSITIONS = {
     "bypass": "blocked",
     "gates": {
         ("asking", "planning"): ("context", "docs-decision", "grill-valid"),
-        ("planning", "executing"): ("plan-schema", "zero-p0", "human-code-clear", "stack-env"),
+        ("planning", "executing"): ("plan-schema", "zero-p0", "protected-list-clear", "stack-env"),
     },
     # Grouped the way the usage text prints them: one tuple per line.
     "commands": {
@@ -1691,7 +1691,7 @@ def gate_plan_schema(root, policy):
 
     The plan is a conversation artefact and a file is written only when the human asks for one. What is
     checked here is therefore only what such a file must carry when it exists, and only because a gate
-    reads it: Files is compared against human-code.txt by human-code-clear.
+    reads it: Files is compared against the protected list by protected-list-clear.
     """
     text = read_plan(root)
     if not text.strip():
@@ -1730,7 +1730,7 @@ def plan_paths(text):
     return [norm_path("", item) for item in found if item and len(item) >= 3]
 
 
-def gate_human_code_clear(root, policy):
+def gate_protected_list_clear(root, policy):
     """The plan must not touch a protected path. There is no exemption to grant: the list is the list."""
     text = read_plan(root)
     if not text.strip():
@@ -1752,7 +1752,7 @@ GATES = {
     "grill-valid": gate_grill_valid,
     "plan-schema": gate_plan_schema,
     "zero-p0": gate_zero_p0,
-    "human-code-clear": gate_human_code_clear,
+    "protected-list-clear": gate_protected_list_clear,
     "stack-env": gate_stack_env,
 }
 

@@ -279,7 +279,7 @@
   },
   {
     "id": "human-code-path-blocked",
-    "why": "A glob entry in human-code.txt must protect the whole subtree.",
+    "why": "A glob entry in the protected list must protect the whole subtree.",
     "state": "executing",
     "human_code": ["# comment line", "docs/**"],
     "payload": {
@@ -395,7 +395,7 @@
   },
   {
     "id": "copilot-instructions-is-self-protected",
-    "why": "T9: the file carrying the standing contract was listed as human code and simultaneously exempted in allowed-edits.txt, so the net effect was permission for the machine to rewrite it. It is self-protected now, and the exemption cannot lift that, because self-protection-path comes earlier in the rule order. The exemption is left in place on purpose: this case proves it does not matter.",
+    "why": "T9: the file carrying the standing contract was on the protected list and simultaneously exempted in the old allowed-edits file, so the net effect was permission for the machine to rewrite it. It is self-protected now, and the exemption cannot lift that, because self-protection-path comes earlier in the rule order. The legacy exemption field is left in place on purpose: this case proves it no longer has any power.",
     "state": "executing",
     "human_code": [".github/copilot-instructions.md"],
     "allowed_edits": [".github/copilot-instructions.md"],

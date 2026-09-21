@@ -4,10 +4,6 @@ __pycache__/
 .pytest_cache/
 
 # Runtime state: machine-written and volatile, and the design treats .orchestrator/ as "not packaged".
-#
-# NOTE: two files in there are human-authored policy rather than state - human-code.txt and
-# allowed-edits.txt. If you want their history, un-ignore just those two by adding:
-#     !.orchestrator/human-code.txt
-#     !.orchestrator/allowed-edits.txt
-# and keeping the directory itself ignored, or track those two paths explicitly.
+# The protected list is deliberately NOT here: it lives at .github/protected.txt, because a list that
+# is not versioned is simply absent on a fresh clone, and every rule that reads it still looks correct.
 .orchestrator/

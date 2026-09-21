@@ -503,7 +503,7 @@ result  = """
 他若坚持，就告诉他去关掉对应规则或改
   .github/ocf/policy.toml
 ——改配置是授权，要求你代跑不是。"""
-unless  = "从不需要例外：这条一旦有例外，就等于把批准权交给了对话。"
+unless  = "从不例外"
 
 [rule.if]
 occasion = "act"
@@ -513,9 +513,9 @@ id      = "plan-file"
 kind    = "soft"
 label   = "写计划文件"
 enabled = false
-why     = "默认对话不落盘。八段式计划是模型自己的工作底稿，写成文件只该在人类明确要求时发生，否则就是用人类的 token 生成没人读的文档。"
+why     = "默认对话不落盘。"
 result  = """
-把八段式计划写成
+把计划模板填充成
   .orchestrator/plan.md：
 类型、摘要、步骤、工具、涉及文件、范围、交付物、自检。
 每段都要具体到可以直接照着做，

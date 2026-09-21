@@ -13,7 +13,7 @@ shorthand for `python .github/ocf/ocf.py <cmd>`.
    and the process steps), and the deliverables. Do not write a plan file unless the human asks for
    one; when they do, write it on the template at `.github/assets/plan-template.md` and it must carry
    `## Steps` and `## Files`, because those are the two a gate reads. Files must name the exact paths to
-   change, because human-code-clear compares them against human-code.txt; on a collision ask the human
+   change, because protected-list-clear compares them against the protected list; on a collision ask the human
    to allow the path.
 3. Dispatch the plan-auditor subagent for an independent review; never audit your own plan. It returns
    the schema result and the P0 list, each item with a verifiable criterion and a repair direction.

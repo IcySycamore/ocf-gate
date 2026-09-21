@@ -19,8 +19,9 @@ recognition: the human approves by running a command in their own terminal.
   agent name referenced by a custom agent or a prompt, every tool token against the seven documented
   aliases, every relative markdown link under `.github`, and that the self-protection pattern still
   covers every orchestrator file. Frontmatter and path references fail silently otherwise.
-- `.orchestrator/` holds the runtime: state, facts, plan.md, human-code.txt, allowed-edits.txt,
-  journal.log, exec.log. Never hand-edit them.
+- `.orchestrator/` holds the runtime: state, facts, plan.md, journal.log, exec.log. Never hand-edit
+  them. The protected list is NOT here - it is `.github/protected.txt`, because a list that is not
+  versioned is absent on a fresh clone, and every rule still reads as if it were there.
 
 ## 2. Commands
 
@@ -28,7 +29,9 @@ Agent: status, set, gate, journal, fail, ok, init, selftest. advance targets are
 planning, reporting, ready, blocked. set refuses approved_by and must_consult, and grill_rounds is
 counted by the hook so it refuses that too.
 
-Human terminal only: approve, reject, confirm, allow, deny, human-code.
+Human terminal only: approve, reject, confirm, allow, deny, human-code, reload. `reload` re-reads the
+configuration and regenerates the two files built from it - the standing contract and the hook wiring -
+so an agent able to run it could edit the rules it is being asked to follow.
 
 The hook entry is `python .github/ocf/ocf.py hook` (or `python3` off Windows), which reads the event
 JSON on stdin. Run `selftest` after any change to the policy or the hooks wiring: it reports findings
@@ -40,7 +43,7 @@ classified as environment, policy or system, and only system findings mean this 
 
 ready to asking is the hook, on the human's first message. asking to planning is the agent, or the
 human running confirm, behind the gates context, docs-decision and grill-valid. planning to executing
-is the human running approve only, behind plan-schema, zero-p0, human-code-clear and stack-env.
+is the human running approve only, behind plan-schema, zero-p0, protected-list-clear and stack-env.
 planning to asking is the human running reject. executing to reporting, and reporting to ready, are the
 agent. Any state goes to blocked and back on the human's word. Staying put is legal and means keep
 going.
@@ -60,7 +63,8 @@ State gates:
 - grill-valid: grill_rounds at least 1, consensus at least 10 characters, grill_used with-docs or me.
 - plan-schema: plan.md carries all 8 sections from section 6.
 - zero-p0: p0_count is 0. Revise the plan, do not just change the number.
-- human-code-clear: plan.md touches no path in human-code.txt, unless the human runs allow.
+- protected-file: plan.md touches no path in `.github/protected.txt`. There is no exemption to grant;
+  a human edits that list by hand.
 - stack-env: stack_env is declared. Ask for the existing environment, never install or probe.
 
 Runtime gates run on PreToolUse. They block by writing `permissionDecision: deny` to stdout and
@@ -89,11 +93,13 @@ edit_notebook_file, vscode_renameSymbol and the GitHub file-write tools:
 0. `.orchestrator/plan.md` is exempt, because the gate itself asks for it.
 1. self-authorization: an executable target whose content invokes a human-only subcommand.
 2. self-protection: anything under `.github/hooks`, `.github/ocf`, `.github/agents` or `.github/prompts`,
-   plus `.github/work-control-flow.md` itself and the six `.orchestrator` runtime files. It is tied to
-   `system.enabled`, not to approval, so it still holds during executing. The human edits by hand, or
-   sets `system.enabled = false`.
-3. human code: the target matches human-code.txt and is not in allowed-edits.txt. Both are judged per
-   path, so one qualifying path does not decide the fate of the other paths in the same call.
+   plus `.github/work-control-flow.md`, `.github/copilot-instructions.md`, `.github/protected.txt` and
+   the four `.orchestrator` runtime files. It is tied to `system.enabled`, not to approval, so it still
+   holds during executing. The human edits by hand, or sets `system.enabled = false`.
+3. protected list: the target matches a line in `.github/protected.txt`. Judged per path, so one
+   qualifying path does not decide the fate of the other paths in the same call, and judged wherever
+   the path came from - the same rule covers the editing tools and the terminal. There is no exemption
+   file: to let something through, a human edits that list by hand.
 4. approval: the state is not executing or reporting.
 
 Exec-class, in order:
@@ -154,8 +160,9 @@ eight sections of the template at `.github/assets/plan-template.md`:
     ## Type  ## Summary  ## Steps  ## Tools  ## Files  ## Scope  ## Deliverables  ## Self-review
 
 Of those, only `## Steps` and `## Files` are required, because only they are read: plan-schema checks
-that both are present and non-empty, and human-code-clear compares Files against human-code.txt, so that
-section must name the exact paths to change. Type is refactor, feature, fix, docs, chore or test. The
+that both are present and non-empty, and protected-list-clear compares Files against the protected
+list, so that section must name the exact paths to change. Type is refactor, feature, fix, docs, chore
+or test. The
 report has its own template at `.github/assets/report-template.md`; both template files are in English and
 the headings stay in English, while the agent fills every other line in the language the human is using.
 
@@ -176,14 +183,16 @@ set approved_by.
 
 ## 7. Terminal discipline
 
-Visible and traceable, never a hung, confused or frantically iterating black box. Keep commands under
-max_cmd_len and to at most max_cmd_stmts statements, keep output visible, and send one short
-single-line command at a time, because the output ownership of a multi-line paste is unreliable. To
-filter, limit rows rather than discarding all output. For a real exit code use a separate child
-process, since a parent shell keeps a stale LASTEXITCODE.
+Visible and traceable, never a hung, confused or frantically iterating black box. Keep commands short
+and to at most three statements - the ceilings are numbers inside the rules that use them
+(`command_length_over = 400`, `command_statements_over = 3`), not keys in a shared table, so a rule and
+its limit cannot drift apart. Keep output visible, and send one short single-line command at a time,
+because the output ownership of a multi-line paste is unreliable. To filter, limit rows rather than
+discarding all output. For a real exit code use a separate child process, since a parent shell keeps a
+stale LASTEXITCODE.
 
-fail_budget consecutive failures sets must_consult and locks every exec-class tool until the human
-replies. Record with `ocf.py fail "<reason>"`, reset with `ocf.py ok`.
+fail_budget consecutive failures - two, from `[limits] fail_budget` - sets must_consult and locks every
+exec-class tool until the human replies. Record with `ocf.py fail "<reason>"`, reset with `ocf.py ok`.
 
 Pitfalls already stepped on. The first group still governs the workflow; the second is carried over
 from the PowerShell and sh implementations that ocf.py replaced. They are kept because the human's
@@ -201,8 +210,7 @@ still runs them.
   `@(...)`.
 - Reading a BOM-less UTF-8 file without -Encoding decodes it as cp936 under PowerShell 5.1, mangling
   text and sometimes swallowing a newline. Use the explicit readers and verify under `powershell` 5.1,
-  because `pwsh` 7 hides it. A BOM in config or human-code.txt once broke the `^key=` anchors, so reads
-  tolerate one.
+  because `pwsh` 7 hides it. A BOM in config once broke the `^key=` anchors, so reads tolerate one.
 - In a `tr` set the `-` may only be first or last.
 - After byte truncation strip a partial character with `LC_ALL=C sed 's/[\200-\277]*$//'`.
 - `$"..."` is not valid interpolation; write `"...: $($x)"`.
@@ -226,15 +234,34 @@ run visual tests.
 
 ## 9. Limits and switches
 
-The `[limits]` keys in `.github/ocf/policy.toml`, with defaults: max_cmd_len 400, max_cmd_stmts 3,
-max_cmd_repeat 3, fail_budget 2. They are read on every invocation, so changes apply immediately; only
-`.github/hooks/*.json` needs a window reload.
+There are two kinds of rule, and they are enforced in two different places. A **hard** rule is read by
+the hook, outside the conversation, and answers with a verdict. A **soft** one cannot be enforced that
+way - nothing can check whether a sentence was written - so `reload` writes it into the standing
+contract the model reads on every turn, and the model applies it. Both are written the same way in
+`.github/ocf/policy.toml`: `enabled`, `kind`, `if` (the occasion it hits), `unless` (the exception),
+`result` (the logic) and `why`. For a hard rule `result` is a verdict; for a soft rule it is the
+sentence itself.
 
-`system.enabled = true` is the real setting and the only switch: no edits and no commands before
-approval, the orchestrator's own files are protected, and writing a human-only subcommand into an
-executable file is refused. `system.enabled = false` hands control back: it skips the approval
-requirement and lets the machine edit gate code, while human-code protection still applies. The policy
-file is self-protected, so the machine cannot turn it off itself, and an unreadable or malformed
+`python .github/ocf/ocf.py reload` is human-only, because it regenerates the two files that are built
+from the configuration: the standing contract and the hook wiring. An agent able to run it could edit
+the rules it is being asked to follow. It validates the whole policy first and changes nothing if the
+policy is broken, since half-applied configuration is worse than none.
+
+`[hooks]` is the install switch: `enabled = false` makes reload write a wiring file with no hooks in
+it, so VS Code stops starting this program at all - uninstalling is not something left half-done. Each
+event has its own switch as well, and the entry point reads them too, because the wiring file is only
+re-read when the window reloads. `pre_tool_use` is the gate; the other three only add context.
+
+Exactly one threshold is left in `.github/ocf/policy.toml` as a shared key: `[limits] fail_budget = 2`.
+Every other ceiling lives inside the rule that uses it. The file is read on every invocation, so a
+change to it applies immediately; only `.github/hooks/*.json` needs a window reload.
+
+`system.enabled` is the maintenance switch. It is NOT the whole gate, which is easy to misread: it
+gates the three self-protection rules and the three self-authorization rules, and nothing else - the
+other rules have no `when` and hold either way. Setting it false hands control back: the orchestrator's
+own files stop being protected, so gate code may be edited. The protected list is judged by its own
+rule, which has no `when` either, so that protection keeps applying. The policy file is self-protected,
+and an unreadable or malformed
 policy keeps the gate on by falling back to a policy that denies every change while still allowing
 reading and the always-allowed tools. That last part matters: a gate that refuses to let anyone read it
 is a gate nobody can repair, and a one-character typo once denied even `read_file`. A missing policy
