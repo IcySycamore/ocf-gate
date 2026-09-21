@@ -340,7 +340,7 @@ LIMIT_CONDITIONS = ("length_over", "statements_over", "repeats_at_least")
 WHEN_VALUES = ("always", "not_approved", "approved", "enforced", "not_enforced")
 SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
 ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
-COMPUTED_FLAGS = ("control_plane", "invokes_entry")
+COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
 RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
              "exempt_when_listed",
              # The newer shape. Both are accepted while the policy is converted rule by rule.
@@ -649,12 +649,34 @@ def statements(command):
     return [part.strip() for part in masked.split(";") if part.strip()]
 
 
+def human_only_call(command):
+    """True when the command runs the entry script WITH a human-only subcommand.
+
+    The subcommand is the argument that follows the script path - what invoking the command means -
+    and not any of those words appearing anywhere in the text. Judging the words anywhere matched
+    the FILENAME `.orchestrator/human-code.txt` in an ordinary cleanup and denied it, which is the
+    same class of error as the allow-rule hole fixed earlier: a rule reading text the human did not
+    aim at it. The vocabulary comes from the human side of the command table, so the rule and the
+    CLI cannot come to disagree about which commands are human-only.
+    """
+    if not command:
+        return False
+    words = set(word for group in TRANSITIONS["commands"]["human"] for word in group)
+    for part in statements(command):
+        match = re.search(r"(?i)" + ENTRY_PAT + r"[\"']?\s+([^\s;|&]+)", part)
+        if match and match.group(1).strip("\"'").lower() in words:
+            return True
+    return False
+
+
 def computed_flags(command):
     if not command:
-        return {"control_plane": False, "invokes_entry": False}
+        return {"control_plane": False, "invokes_entry": False, "human_only_call": False}
     parts = statements(command)
     control_plane = bool(parts) and all(CP_STMT_RE.match(part) for part in parts)
-    return {"control_plane": control_plane, "invokes_entry": ENTRY_RE.search(command) is not None}
+    return {"control_plane": control_plane,
+            "invokes_entry": ENTRY_RE.search(command) is not None,
+            "human_only_call": human_only_call(command)}
 
 
 def dig(payload, dotted):
@@ -911,8 +933,11 @@ def filter_condition(context, condition, values, keep):
 # piece it measures: the command_* conditions measure the command, the path_* conditions the paths.
 
 # The protected list is a fixed file, not a per-rule path: a rule that names the list it checks would
-# let the list be moved out from under it.
-PROTECTED_LIST_REL = ".orchestrator/protected.txt"
+# let the list be moved out from under it. It lives under .github/ rather than the gitignored runtime
+# directory on purpose - a list that is not versioned is absent on a fresh clone, and an absent list
+# protects nothing while every rule still reads as if it did. The list is itself listed in its own
+# entries, so the machine cannot empty it.
+PROTECTED_LIST_REL = ".github/protected.txt"
 
 
 def comma_list(value):

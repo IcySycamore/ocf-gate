@@ -201,9 +201,8 @@ result  = "deny"
 why     = "Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead."
 
 [rule.if]
-class           = "exec"
-command_matches = '(?i)\b(approve|reject|confirm|allow|deny|human-code|reload)\b'
-computed        = "invokes_entry"
+class    = "exec"
+computed = "human_only_call"
 
 [[rule]]
 id      = "advance-target"
@@ -232,7 +231,7 @@ why = "Writing a human-only subcommand into an executable file is self-authoriza
 id = "self-protection-path"
 on = "edit"
 surface = "path"
-match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.orchestrator/(state|facts|protected\.txt|journal\.log|exec\.log)$'
+match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/(state|facts|journal\.log|exec\.log)$'
 when = "enforced"
 action = "deny"
 why = "The orchestrator's own files. The human edits them by hand, or sets system.enabled = false."
@@ -241,7 +240,7 @@ why = "The orchestrator's own files. The human edits them by hand, or sets syste
 id = "self-protection-write"
 on = "exec"
 surface = "write_target"
-match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.orchestrator/'
+match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/'
 when = "enforced"
 action = "deny"
 why = "A command may not write to the orchestrator's own files."

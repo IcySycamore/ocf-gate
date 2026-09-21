@@ -1,0 +1,14 @@
+# Protected list - the machine never modifies any of these paths.
+# One glob per line, '#' starts a comment.
+#
+# This is the only list. There is no second "exemption" file; to let something through, a human
+# edits this file by hand. It is listed in its own entries below, so the machine cannot empty it.
+#
+# Human-written code and documents:
+CONTEXT.md
+CONTEXT-MAP.md
+docs/**
+# The orchestrator's own standing contract. Redundant with the self-protection rule on purpose.
+.github/copilot-instructions.md
+# This file, so the list cannot be rewritten by the thing it constrains.
+.github/protected.txt

@@ -134,6 +134,45 @@
     "expect_rule": "human-only-subcommand"
   },
   {
+    "id": "human-only-word-inside-a-filename-is-not-a-call",
+    "why": "The rule reads the subcommand - the argument after the entry script - not the words anywhere in the text. Matching text anywhere denied an ordinary cleanup because a FILE was named human-code-list.md, which is the same defect class as judging an allow rule off a path that merely appears in a command.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": {
+        "command": "Remove-Item docs/human-code-list.md"
+      }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
+  },
+  {
+    "id": "human-only-word-as-an-unrelated-argument-is-not-a-call",
+    "why": "Same fix, the other way round: the word is a search pattern, the entry script is never invoked. A rule keyed on the words alone would deny reading for the word deny.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": {
+        "command": "Get-ChildItem .orchestrator | Select-String deny"
+      }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
+  },
+  {
+    "id": "human-only-subcommand-after-another-statement",
+    "why": "The positive half of the same fix: the subcommand is still caught when it is not the first statement, so narrowing the match to the argument position did not narrow it into an escape hatch.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": {
+        "command": "python .github/ocf/ocf.py status; python .github/ocf/ocf.py deny docs/**"
+      }
+    },
+    "expect": "deny",
+    "expect_rule": "human-only-subcommand"
+  },
+  {
     "id": "visual-tool-always-denied",
     "why": "The machine never looks at an image with a tool, not even while acting.",
     "state": "executing",

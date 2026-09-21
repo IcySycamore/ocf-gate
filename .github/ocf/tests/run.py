@@ -68,7 +68,7 @@ def build_root(case):
     # protected, so the older cases keep meaning the same thing; allowed_edits is deliberately ignored,
     # because the mechanism it stood for is gone.
     protected = list(case.get("protected") or []) or list(case.get("human_code") or [])
-    write(os.path.join(".orchestrator", "protected.txt"),
+    write(os.path.join(".github", "protected.txt"),
           "".join(line + "\n" for line in protected))
     log = case.get("exec_log") or []
     if log:
@@ -305,6 +305,9 @@ PROTECTED_BY_POLICY = (
     ".github/agents/orchestrator.agent.md",
     ".github/agents/plan-auditor.agent.md",
     ".github/prompts/work-plan.prompt.md",
+    # The list guards itself: without this entry the machine could empty it, and an empty list
+    # protects nothing while every rule still reads as if it did.
+    ".github/protected.txt",
 )
 
 
