@@ -299,7 +299,6 @@ PROTECTED_BY_POLICY = (
     ".github/ocf/policy.toml",
     ".github/work-control-flow.md",
     ".github/hooks/orchestrator.json",
-    ".github/hooks/scripts/ocf.ps1",
     ".github/agents/orchestrator.agent.md",
     ".github/agents/plan-auditor.agent.md",
     ".github/prompts/work-plan.prompt.md",

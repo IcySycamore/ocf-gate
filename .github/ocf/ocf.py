@@ -55,7 +55,9 @@ PLAN_HEADINGS = ("type", "summary", "steps", "tools", "files", "scope", "deliver
 
 # Entry script recognised only by its full relative path. Merely mentioning the name elsewhere must
 # not inherit the control plane exemption, which was a real bypass in the previous implementation.
-ENTRY_PAT = r"\.github[\\/](?:ocf[\\/]ocf\.py|hooks[\\/]scripts[\\/]ocf\.(?:py|ps1|sh))"
+# One branch, not three: the PowerShell and sh implementations are gone, and a pattern that keeps
+# naming deleted files would hand the exemption to a path nobody executes.
+ENTRY_PAT = r"\.github[\\/]ocf[\\/]ocf\.py"
 ENTRY_RE = re.compile(r"(?i)" + ENTRY_PAT)
 CP_STMT_RE = re.compile(r"(?i)^\s*(?:&\s*)?(?:(?:python3?(?:\.exe)?|py(?:\.exe)?)\s+)?[\"']?" + ENTRY_PAT + r"[\"']?(?:\s|$)")
 

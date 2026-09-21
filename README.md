@@ -200,7 +200,7 @@ python .github\ocf\ocf.py deny "docs/**"
 ## 更新
 
 1. 从上游拿到新版 `ocf.py` / `policy.toml` / `orchestrator.json` / `work-control-flow.md` / `tests/`
-2. 覆盖（旧版 `ocf.sh`、`ocf.ps1` 已被取代，可直接删除）
+2. 覆盖（旧版 `ocf.sh`、`ocf.ps1` 已删除；如你本地还留有这两个文件，一并删掉）
 3. 重载窗口
 4. 跑 `selftest` 与 `tests/run.py` 确认；若 `facts` 键有变更，按 `work-control-flow.md` 第 5 节补齐
 5. `.orchestrator/` 一般不需要迁移

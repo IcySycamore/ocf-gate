@@ -6,7 +6,7 @@
 
 ## 0. 这次重构要消除的风险
 
-当前门禁由 `ocf.ps1`（43.5 KB）与 `ocf.sh`（32.3 KB）两份手工同步的实现组成，占整套系统 87 KB 中的 76 KB。本次会话在它们身上发现 5 个缺陷，**全部在门禁层**：
+改造前门禁由 `ocf.ps1`（43.5 KB）与 `ocf.sh`（32.3 KB）两份手工同步的实现组成，占整套系统 87 KB 中的 76 KB；两份已按第 10 节第 5 步删除。本次会话在它们身上发现 5 个缺陷，**全部在门禁层**：
 
 1. `if (Test-Enforced -and -not $isOcf)` —— PowerShell 把开头裸词当命令，变量从未被读取，"控制面豁免"成了死代码。后果：`enforce=on` 时连 `ocf status` 都被拦，agent 无法推进任何状态。**过严到完全不可用，且只在 enforce=on 下显形。**
 2. 控制面豁免用子串匹配：`Write-Host "ocf.ps1"; <任意命令>` 即继承豁免、跳过批准门禁。**过松。**
@@ -204,7 +204,7 @@ hook 命令保持一行，用平台覆盖解决解释器名差异（`py` / `pyth
 
 ## 8. 移除清单
 
-- `ocf.sh`、`ocf.ps1`（由 `ocf.py` 取代）。
+- `ocf.sh`、`ocf.ps1`（由 `ocf.py` 取代）——已删除。
 - 手写 JSON 提取（`json_str`）：改用标准库，顺带消掉"文本正则匹配嵌套字段"这一整类缺陷（第 0 节第 3、4 条）。
 - 手写的 glob→regex 字符串手术：收敛到一处实现。
 - 三处重复的自保护清单：已合并，现改由策略文件承载。
@@ -223,7 +223,7 @@ hook 命令保持一行，用平台覆盖解决解释器名差异（`py` / `pyth
 
 运行器为每条用例搭一个临时仓库，把用例作为 **真实 hook 入口的子进程** 跑一遍（而非直接调用判定函数），
 并断言三件事：判定结果、命中的 rule id、进程退出码为 0 且 stderr 为空。“入口本身坏掉”因此也会失败。
-再加一条全 `.github` 纯 ASCII 断言（容忍前导 BOM，跳过构建产物）。当前 25 条用例 + 1 条 ASCII 断言全过。
+再加一条全 `.github` 纯 ASCII 断言（容忍前导 BOM，跳过构建产物）。截至删除旧实现时，用例表为 33 条、结构断言 6 条，全过。
 
 必含的回归用例（对应第 0 节的 5 个缺陷）：
 
@@ -244,15 +244,15 @@ human-code glob 生效与 allowed-edits 豁免生效、静默输出／超长命�
 
 ## 10. 迁移步骤
 
-1. ✅ 落地 `ocf.py` + `policy.toml` + 用例表；已用真实 payload 跑通（27/27 用例 + 4 条结构断言）。
+1. ✅ 落地 `ocf.py` + `policy.toml` + 用例表；已用真实 payload 跑通（当时 27/27 用例 + 4 条结构断言，现已扩到 33 条 + 6 条）。
 2. ✅ 切换 `.github/hooks/orchestrator.json` 指向新入口，并加上 SessionStart 自检。
 3. ⏳ **人类**：重载窗口，跑 `python .github/ocf/ocf.py selftest` 与用例表。
 4. ⏳ **人类**：确认无事后，把 `policy.toml` 的 `system.enabled` 改为 true，重载窗口。
-5. ⏳ 观察一段时间后删除 `ocf.ps1` / `ocf.sh`（`.orchestrator/config` 已删）。
-6. ✅ README 已按新架构整体重写。
+5. ✅ `ocf.ps1` / `ocf.sh` 已删除（`.orchestrator/config` 已删）。6. ✅ README 已按新架构整体重写。
 
-回滚：hooks 配置改回一行即可。但要注意 **`d:\PROJECT\agent` 不是 git 仓库**，删除不可回滚，
-所以旧脚本保留到确认稳定，旧 README 暂存为 `README.md.bak`，复核后可删。
+回滚：hooks 配置改回一行即可。本节早先写的“`d:\PROJECT\agent` 不是 git 仓库，所以删除不可回滚、
+旧脚本保留到确认稳定、旧 README 暂存为 `README.md.bak`”已作废——仓库已是 git 仓库，旧脚本已删，
+`README.md.bak` 从未生成。
 
 步骤 3、4 必须由人类做，原因有两条：一是 hooks 无热加载，重载只能由人操作；二是 `enabled=false` 期间
 门禁是关的，而“把门禁打开”这个动作本身绝不能由 agent 完成。
@@ -262,7 +262,7 @@ human-code glob 生效与 allowed-edits 豁免生效、静默输出／超长命�
 ## 11. 已定
 
 1. 实现改用 Python 3；依赖通过 `requirements.txt` 装载，Docker 只用于跑测试。
-2. 不保留 `ocf.sh` 作为降级：那会把刚消掉的双实现风险请回来。缺 Python 时由自检报 `[environment]` 并拒绝执行，而不是悄悄降级。
+2. 不保留 `ocf.sh` 作为降级：那会把刚消掉的双实现风险请回来。缺 Python 时由自检报 `[environment]` 并拒绝执行，而不是悄悄降级。（本条已成事实：两份脚本已删。）
 3. 重载继续由人工完成；hooks 变更后需重载窗口。
 4. **策略文件只有一份**：`.github/ocf/policy.toml`，无覆盖层。所有路径相对仓库根。
 5. **中文文档边界**：README 与本文档中文；`.github/` 下全英文且纯 ASCII。
