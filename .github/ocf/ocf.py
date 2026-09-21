@@ -840,6 +840,17 @@ def emit_context(event, text):
     out(json.dumps(payload, ensure_ascii=True))
 
 
+def emit_posttool_context(text):
+    """PostToolUse takes additionalContext as a list, unlike SessionStart which takes a string.
+
+    Read off the extension's own consumers: the SessionStart path calls .substring() on the value,
+    while the PostToolUse path iterates it. The wrong shape either does nothing or, worse, pushes one
+    message per character, so the two emitters deliberately differ.
+    """
+    payload = {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": [text]}}
+    out(json.dumps(payload, ensure_ascii=True))
+
+
 def check_pretooluse(root, policy, payload):
     context = Context(root, policy, payload)
     action, rule_id, reason = decide(context)
@@ -870,19 +881,56 @@ def cmd_hook(root, argv):
             text = handle_session_start(root, policy)
             emit_context("SessionStart", text)
             return 0
-        if event in ("Stop", "SubagentStop", "PreCompact", "SubagentStart", "PostToolUse"):
+        if event == "PostToolUse":
+            text = handle_post_tool(root, policy, payload)
+            if text:
+                emit_posttool_context(text)
+            return 0
+        if event in ("Stop", "SubagentStop", "PreCompact", "SubagentStart"):
             return 0
         return 0
     except OcfError as exc:
         if event == "PreToolUse":
             emit_pretooluse("deny", "Blocked by the orchestrator: %s" % exc.tagged())
-        else:
+        elif event != "PostToolUse":
             out(exc.tagged())
         return 0
     except Exception as exc:  # fail safe: an internal fault denies rather than allows
         if event == "PreToolUse":
             emit_pretooluse("deny", "[system] internal error in the gate, denied to stay safe: %r" % (exc,))
         return 0
+
+
+# A command that never reports a result has no place in a workflow whose rule is "visible and
+# traceable". These are the shapes of "the shell is still waiting", taken from a command that hung in
+# a continuation prompt: quoting that does not close makes a shell wait for ever, and no text rule can
+# see that coming, because the gate reads the command and cannot parse the shell's grammar. What it can
+# do is notice the aftermath.
+NO_PROGRESS_PATTERNS = (
+    (re.compile(r"(?m)^\s*>>\s*$"),
+     "a shell is sitting at a continuation prompt, so the command never ran to completion"),
+    (re.compile(r"(?i)moved to the background"),
+     "the command was moved to the background, so it has not reported a result"),
+    (re.compile(r"(?i)waiting for (your )?input"),
+     "the command is waiting for input"),
+)
+
+
+def handle_post_tool(root, policy, payload):
+    """Return a warning to inject when a command produced no progress, else None."""
+    tool = payload.get("tool_name") or ""
+    if tool_class(policy, tool) != "exec":
+        return None
+    response = payload.get("tool_response")
+    if not isinstance(response, str):
+        response = "" if response is None else str(response)
+    for pattern, why in NO_PROGRESS_PATTERNS:
+        if pattern.search(response):
+            journal(root, policy, read_state(root, policy), "no-progress command: %s" % why)
+            return ("OCF: the previous command did not report progress, because %s. Do not treat it as a "
+                    "completed success. Split the command, or record it with ocf.py fail \"<reason>\" and "
+                    "tell the human what you tried." % why)
+    return None
 
 
 def log_prompt(root, policy, payload, state):

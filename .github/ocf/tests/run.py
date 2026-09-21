@@ -81,12 +81,15 @@ def parse_output(text):
         if line.startswith("{"):
             last = line
     if not last:
-        return None, "", ""
+        return None, "", "", ""
     payload = json.loads(last)
     spec = payload.get("hookSpecificOutput") or {}
     reason = spec.get("permissionDecisionReason") or ""
     match = re.match(r"\[([^\]]+)\]", reason)
-    return spec.get("permissionDecision"), (match.group(1) if match else ""), reason
+    context = spec.get("additionalContext") or ""
+    if isinstance(context, list):
+        context = "\n".join(str(item) for item in context)
+    return spec.get("permissionDecision"), (match.group(1) if match else ""), reason, context
 
 
 def run_case(case):
@@ -105,24 +108,36 @@ def run_case(case):
             [sys.executable, ENTRY, "hook"],
             input=json.dumps(payload).encode("utf-8"),
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
-        decision, rule, reason = parse_output(proc.stdout.decode("utf-8", "replace").strip())
+        raw = proc.stdout.decode("utf-8", "replace").strip()
+        decision, rule, reason, context = parse_output(raw)
         problems = []
-        if decision != case["expect"]:
-            problems.append("expected %s, got %s" % (case["expect"], decision))
-        if case.get("expect_rule") and rule != case["expect_rule"]:
-            problems.append("expected rule %s, got %s" % (case["expect_rule"], rule))
-        for needle in case.get("expect_reason_contains") or []:
-            if needle not in reason:
-                problems.append("the reason must name %r, because a block that names the wrong file "
-                                "cannot be acted on; got: %r" % (needle, reason[:200]))
-        if case.get("expect_not_rule") and rule == case["expect_not_rule"]:
-            problems.append("rule %s must not fire but did" % rule)
+        if case.get("expect_silent"):
+            decision = "silent"
+            if raw:
+                problems.append("the hook must stay silent here, but it wrote: %r" % raw[:200])
+        elif case.get("expect_context_contains"):
+            decision = "context"
+            for needle in case["expect_context_contains"]:
+                if needle not in context:
+                    problems.append("the injected context must contain %r; got %r"
+                                    % (needle, context[:200]))
+        else:
+            if decision != case["expect"]:
+                problems.append("expected %s, got %s" % (case["expect"], decision))
+            if case.get("expect_rule") and rule != case["expect_rule"]:
+                problems.append("expected rule %s, got %s" % (case["expect_rule"], rule))
+            for needle in case.get("expect_reason_contains") or []:
+                if needle not in reason:
+                    problems.append("the reason must name %r, because a block that names the wrong file "
+                                    "cannot be acted on; got: %r" % (needle, reason[:200]))
+            if case.get("expect_not_rule") and rule == case["expect_not_rule"]:
+                problems.append("rule %s must not fire but did" % rule)
         if proc.returncode != 0:
             problems.append("exit code %d; a hook must always exit 0" % proc.returncode)
         stderr = proc.stderr.decode("utf-8", "replace").strip()
         if stderr:
             problems.append("stderr is not empty: %r" % stderr[:200])
-        return (not problems), decision, rule, reason, "; ".join(problems)
+        return (not problems), decision, rule, reason or context, "; ".join(problems)
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -133,7 +148,7 @@ def run_all(verbose=False):
     for case in cases:
         ok, decision, rule, reason, problems = run_case(case)
         marker = "PASS" if ok else "FAIL"
-        print("%s  %-32s %-6s %s" % (marker, case["id"], decision, rule))
+        print("%s  %-32s %-6s %s" % (marker, case["id"], decision or "-", rule or ""))
         if verbose and reason:
             for line in reason.splitlines():
                 print("        | %s" % line)

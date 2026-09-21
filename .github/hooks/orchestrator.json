@@ -23,6 +23,14 @@
         "windows": "python .github/ocf/ocf.py hook",
         "timeout": 20
       }
+    ],
+    "PostToolUse": [
+      {
+        "type": "command",
+        "command": "python3 .github/ocf/ocf.py hook",
+        "windows": "python .github/ocf/ocf.py hook",
+        "timeout": 20
+      }
     ]
   }
 }

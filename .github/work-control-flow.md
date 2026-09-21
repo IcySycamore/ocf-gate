@@ -12,7 +12,7 @@ recognition: the human approves by running a command in their own terminal.
 - `.github/ocf/policy.toml` is the only configuration: every rule, threshold and tool classification.
   There is no override layer, so what that file says is what the gate does. It is self-protected, so
   the human edits it by hand.
-- `.github/hooks/orchestrator.json` wires SessionStart, UserPromptSubmit and PreToolUse to
+- `.github/hooks/orchestrator.json` wires SessionStart, UserPromptSubmit, PreToolUse and PostToolUse to
   `ocf.py hook`.
 - `.github/ocf/tests/` holds the offline case table. Each case runs through the real entry point, so a
   gate that quietly stopped denying fails a test instead of looking healthy. It also resolves every
@@ -65,6 +65,12 @@ State gates:
 Runtime gates run on PreToolUse. They block by writing `permissionDecision: deny` to stdout and
 exiting 0, except going in circles which answers ask. Never rely on the exit code and never write to
 stderr, and a broken guard fails safe by denying.
+
+PostToolUse is a reporter rather than a gate. When a terminal command returns with no progress - a
+shell sitting at a continuation prompt, or a command moved to the background - it injects a warning
+saying the command never reported a result, and journals it. Text rules cannot predict that an unclosed
+quote will hang a shell, because the gate reads the command instead of parsing the shell; what it can
+do is notice the aftermath, so a silent hang becomes a record instead of a mystery.
 
 The gate is an interpreter and `policy.toml` is the program: each rule declares what it applies to,
 what it matches, and what it answers, and the first match wins. That is why exemptions sit at the top

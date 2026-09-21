@@ -358,5 +358,56 @@
     "expect": "deny",
     "expect_rule": "human-code",
     "expect_reason_contains": ["docs/notes.md"]
+  },
+  {
+    "id": "posttool-continuation-prompt-warned",
+    "why": "A shell left at a continuation prompt is the exact shape of a command that hung with no echo. The gate reads text and cannot predict that an unclosed quote will hang a shell, so it notices the aftermath instead.",
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "$x = \"unclosed" },
+      "tool_response": "PS D:\\PROJECT\\agent> $x = \"unclosed\n>> "
+    },
+    "expect_context_contains": [
+      "did not report progress",
+      "continuation prompt"
+    ]
+  },
+  {
+    "id": "posttool-background-warned",
+    "why": "A command moved to the background has not reported a result, so treating it as a completed success is a silent error.",
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "python long_task.py" },
+      "tool_response": "Note: This terminal execution was moved to the background using the ID 1234."
+    },
+    "expect_context_contains": ["did not report progress"]
+  },
+  {
+    "id": "posttool-normal-output-stays-silent",
+    "why": "A command that reported normally must not be warned about, or the injection becomes noise the human learns to ignore.",
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "git status" },
+      "tool_response": "On branch master\nnothing to commit, working tree clean"
+    },
+    "expect_silent": true
+  },
+  {
+    "id": "posttool-edit-tool-stays-silent",
+    "why": "Only commands can hang; a file edit has no output to wait for.",
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "create_file",
+      "tool_input": { "filePath": "src/x.py", "content": "x" },
+      "tool_response": "File created"
+    },
+    "expect_silent": true
   }
 ]
