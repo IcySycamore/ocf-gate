@@ -327,3 +327,27 @@ Auto-copilot 模式下，agent 调 `vscode_askQuestions` 后收到一条**自动
 | C. 收窄关闭开关 | `enabled=false` 只放开“编排器自身文件的维护”，不再等于“可自由作业” | 改动开关语义；但直击本次事故的根因 |
 
 **在信号被测定之前不落地任何依赖它的规则** —— 否则失败方向会是“把 agent 锁死”，那是我们一路在避免的另一类事故。
+
+### 事后查明：这条“自动回复”是编辑器自己注入的，而且可以关（2026-09-21）
+在 VS Code 核心包（`workbench.desktop.main.js`）里找到：
+
+     if (info?.permissionLevel === "autopilot" || configService.getValue("chat.autoReply")) {
+         let W = info?.modeInfo?.permissionLevel === "autopilot" ? "Autopilot mode" : "Auto-reply enabled";
+
+同处可见注入文案的字面量：`"The user is not available to answer your question. Choose a pragmatic option
+best aligned with the context..."`。机制是：提问会建立 `pendingQuestionCarousels`（`blockOnResponse`），
+而上述两个条件（**或**关系）之一成立时，VS Code 便**替人类把问题答了**；两者都关时它真的等待人类。
+
+因此新增方案 **D（首选，且不需要写任何规则）**：把权限档退出 autopilot，并在用户设置里设
+`"chat.autoReply": false`。相关键（均在核心包中注册）：`chat.tools.global.autoApprove`、
+`chat.tools.terminal.enableAutoApprove`、`chat.agent.terminal.autoApprove`、
+`chat.autopilot.advanced.enabled`、`chat.permissions.autopilot`。
+
+**方案优先级因此改为：D 先做 → 用插桩确认 → 再判断 A/B 是否仍需。** 若 D 生效，A（删掉提问工具）
+就不再值得付代价：它是为一个可以直接关掉的行为而牺牲一个有用的能力。
+
+### 相邻漏洞：任何一条消息都能解除失败预算
+批准不受影响 —— `needs_approval` 只由 `state` 决定，而 `executing` 只能由人类在自己终端执行
+`approve` 写入，聊天消息无论来自谁都不能改变状态。但**另一个口子存在**：`UserPromptSubmit` 会清除
+`must_consult`。若自动回复也能触发它，那么自动回复不仅能骗过 agent，还能**解开失败预算锁**。
+同一病灶、低一级严重度，修法与 D 同时生效。

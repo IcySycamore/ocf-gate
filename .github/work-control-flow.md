@@ -223,6 +223,14 @@ silence.
 
 Length is counted in characters, once, on every platform, because there is only one implementation.
 
+The editor must not answer questions on the human's behalf. Verified against the VS Code core bundle: when
+the agent asks a question and either the chat permission level is `autopilot` or the setting
+`chat.autoReply` is true, VS Code **injects a reply itself**. The injected text is fixed ("The user is
+not available to answer your question..."), but the agent cannot rely on recognising it, and neither
+can the gate: an injected reply and a human one both arrive as UserPromptSubmit. So this is a
+**prerequisite, not a rule**: keep the permission level out of autopilot, and set `chat.autoReply` to
+false in user settings. With both off, a question genuinely waits for the human. See section 10.
+
 ## 10. Known limitations
 
 - Failure detection is self-reported: the hook fires after a tool succeeded, so `ocf.py fail` has to
@@ -238,5 +246,9 @@ Length is counted in characters, once, on every platform, because there is only 
 - Whether the gate is still alive is proved by canaries, and canaries only run when something runs
   them: SessionStart and `selftest`. If hooks stop being delivered at all, the absence of the
   self-check is the only signal, and the absence of a signal is easy to miss.
+- The gate cannot tell a human reply from an injected one. Both arrive as UserPromptSubmit, so
+  "the human has replied" is not something any rule can currently establish; it is enforced only by
+  turning the injection off in the editor (section 9). Corollary: an injected reply also clears the
+  failure budget, because clearing is tied to the same event.
 - Inline agent hooks would scope enforcement to one agent, but they need the chat.useCustomAgentHooks
   setting, and if it is off the gate silently stops working, so the workspace hook stays the default.
