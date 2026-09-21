@@ -1,0 +1,3 @@
+# Test and CI dependencies only. Never imported by the hook entry point.
+-r requirements.txt
+pytest>=8.0

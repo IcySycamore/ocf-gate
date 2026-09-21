@@ -1,0 +1,339 @@
+# OCF policy - the single place that decides what the gate does.
+#
+# Edit this file to change gating behaviour
+#
+# Rules are evaluated in file order and the FIRST match wins. Exemptions therefore come first, precise
+# rules next, and broad catch-alls last.
+#
+# when: always | not_approved | approved | enforced | not_enforced
+#   not_approved = approval applies AND the state is not an acting state, i.e. the case that needs a
+#                  human approve. Use it for the approval rules themselves.
+#   enforced     = system.enabled is true, regardless of the current state. Use it for rules that
+#                  protect the orchestrator and for self-authorization, because those must hold even
+#                  while acting. `not_approved` would wrongly switch them off during executing.
+#
+# Condition vocabulary for only_if / unless. Exactly one key per condition:
+#   fact          = "<name>", is = "<value>"   a fact equals a value
+#   fact          = "<name>", is_set = true    a fact is non-empty
+#   listed_in     = "<file>"                   the surface value matches a line in that file
+#   content_matches = "<regex>"                the tool's content or raw tool_input matches
+#   length_over   = "<limit key>"              the command is longer than that limit
+#   statements_over = "<limit key>"            the command has more statements than that limit
+#   repeats_at_least = "<limit key>"           the command was already run that many times
+#   computed      = "<name>"                   a named flag computed in code (see below)
+#
+# Computed flags the engine provides:
+#   control_plane  every statement invokes this orchestrator's own entry script by its full relative
+#                  path, so merely mentioning the name elsewhere does not inherit the exemption.
+#   invokes_entry  at least one statement does. Used to bind a human-only subcommand rule to a real
+#                  invocation, so a commit message that happens to contain the word cannot trip it.
+
+[system]
+# The single switch for the whole gate. false = the human has handed control back: the approval
+# requirement and the orchestrator self-protection are skipped, so gate code may be edited.
+#
+# MIGRATION: keep this false until ocf.py has been validated against the real hooks, then flip it to
+# true and reload the window.
+enabled = false
+
+[paths]
+state_dir = ".orchestrator"
+human_code_list = ".orchestrator/human-code.txt"
+allowed_edits_list = ".orchestrator/allowed-edits.txt"
+
+[limits]
+# Read on every invocation, so changes apply without reloading the window.
+max_cmd_len = 400
+max_cmd_stmts = 3
+max_cmd_repeat = 3
+fail_budget = 2
+
+[approval]
+# The states in which acting is allowed. Entering them is a human-only act.
+allowed_states = ["executing", "reporting"]
+# A real sentence, so an accidental or scripted call cannot approve a plan.
+min_reason_len = 8
+
+[unknown_tool]
+# Applied only outside allowed_states. allow | ask | deny
+action = "ask"
+
+[self_authorization]
+executable_extensions = [".ps1", ".psm1", ".sh", ".bash", ".bat", ".cmd", ".py", ".js", ".rb", ".pl"]
+
+[selftest]
+# A canary proves the gate is alive. Each case runs through the REAL hook entry point, so a gate that
+# quietly stopped denying is caught instead of looking healthy.
+[[selftest.canary]]
+id = "deny-visual-tool"
+expect = "deny"
+payload = { hook_event_name = "PreToolUse", tool_name = "view_image", tool_input = { filePath = "canary.png" } }
+
+[[selftest.canary]]
+id = "deny-human-only-subcommand"
+expect = "deny"
+payload = { hook_event_name = "PreToolUse", tool_name = "run_in_terminal", tool_input = { command = "python .github/ocf/ocf.py approve \"looks like a human call\"" } }
+
+[[selftest.canary]]
+id = "allow-always-allowed-tool"
+expect = "allow"
+payload = { hook_event_name = "PreToolUse", tool_name = "manage_todo_list", tool_input = { todoList = [] } }
+
+# ---------------------------------------------------------------------------
+# Tool classification. Adding a tool needs no code change.
+# ---------------------------------------------------------------------------
+
+[tools]
+# edit: the target path and its content are inspected.
+edit = [
+  "create_file",
+  "create_directory",
+  "replace_string_in_file",
+  "multi_replace_string_in_file",
+  "edit_notebook_file",
+  "vscode_renameSymbol",
+  "mcp_github_mcp_se_create_or_update_file",
+  "mcp_github_mcp_se_delete_file",
+  "mcp_github_mcp_se_push_files",
+  "mcp_github_mcp_se_fork_repository",
+]
+# exec: the command string is inspected.
+exec = [
+  "run_in_terminal",
+  "run_notebook_cell",
+  "mcp_playwright_browser_evaluate",
+]
+# action: performs something but exposes no single command string, so it only gets the approval rule.
+action = [
+  "create_and_run_task",
+  "install_python_packages",
+  "install_extension",
+  "debug_java_application",
+  "configure_python_environment",
+  "create_new_workspace",
+  "create_new_jupyter_notebook",
+]
+# visual: blocked unconditionally, never subject to approval.
+visual = [
+  "screenshot_page",
+  "view_image",
+  "run_playwright_code",
+  "mcp_playwright_browser_take_screenshot",
+  "mcp_playwright_browser_run_code_unsafe",
+]
+# Neither read-only nor dangerous; never escalated, including by the unknown-tool rule.
+always_allow = ["runSubagent", "manage_todo_list", "vscode_askQuestions", "memory"]
+
+# Where each tool keeps its payload. A dotted path descends into nested objects, which is what fixes
+# the class of bug where a command hidden at task.command was never inspected.
+[tools.field]
+default = ["command", "code"]
+run_in_terminal = ["command"]
+run_notebook_cell = ["code"]
+create_and_run_task = ["task.command"]
+mcp_playwright_browser_evaluate = ["function"]
+
+# ---------------------------------------------------------------------------
+# Rules - first match wins
+# ---------------------------------------------------------------------------
+
+# plan.md is the artifact the gate itself demands, so it must be writable before approval.
+[[rule]]
+id = "plan-md-exempt"
+on = "edit"
+surface = "path"
+match = '^\.orchestrator/plan\.md$'
+action = "allow"
+why = "The gate itself asks for this artifact."
+
+[[rule]]
+id = "failure-budget"
+on = "exec"
+surface = "command"
+match = '.*'
+action = "deny"
+only_if = { fact = "must_consult", is = "yes" }
+why = "Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies."
+
+[[rule]]
+id = "visual-tool"
+on = "visual"
+surface = "tool"
+match = '.*'
+action = "deny"
+why = "The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not."
+
+[[rule]]
+id = "visual-command"
+on = "exec"
+surface = "command"
+match = '(?i)(headless|--screenshot|screenshot|playwright|puppeteer|capture.{0,12}(image|screen))'
+action = "deny"
+why = "The machine may never run visual or screenshot tests."
+
+[[rule]]
+id = "human-only-subcommand"
+on = "exec"
+surface = "command"
+match = '(?i)\b(approve|reject|confirm|allow|deny|human-code)\b'
+action = "deny"
+only_if = { computed = "invokes_entry" }
+why = "Authorization subcommands run only in the human's own terminal."
+
+[[rule]]
+id = "advance-target"
+on = "exec"
+surface = "command"
+match = 'advance\s+(?!asking\b|planning\b|reporting\b|ready\b|blocked\b)[A-Za-z-]+'
+action = "deny"
+why = "The agent may not advance to that state. Entering executing is a human act."
+
+[[rule]]
+id = "self-authorization-write"
+on = "edit"
+surface = "path"
+match = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
+when = "enforced"
+action = "deny"
+only_if = { content_matches = '(?i)ocf\.(py|ps1|sh).{0,300}?(approve|reject|confirm|allow|deny|human-code)' }
+why = "Writing a human-only subcommand into an executable file is self-authorization."
+
+# The orchestrator's own files. Includes the rules document, because a rules document the machine can
+# rewrite is not a rule. `tests/run.py` asserts that this pattern still matches every one of them, so
+# moving a file without moving the pattern fails a test instead of opening a hole.
+[[rule]]
+id = "self-protection-path"
+on = "edit"
+surface = "path"
+match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.orchestrator/(state|facts|human-code\.txt|allowed-edits\.txt|journal\.log|exec\.log)$'
+when = "enforced"
+action = "deny"
+why = "The orchestrator's own files. The human edits them by hand, or sets system.enabled = false."
+
+[[rule]]
+id = "self-protection-write"
+on = "exec"
+surface = "write_target"
+match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.orchestrator/'
+when = "enforced"
+action = "deny"
+why = "A command may not write to the orchestrator's own files."
+
+# Human code: only when the path is actually listed, and only when it is not explicitly allowed.
+[[rule]]
+id = "human-code"
+on = "edit"
+surface = "path"
+match = '.*'
+only_if = { listed_in = ".orchestrator/human-code.txt" }
+exempt_when_listed = ".orchestrator/allowed-edits.txt"
+action = "deny"
+why = "That path is human code. The human must grant access from their own terminal first."
+
+[[rule]]
+id = "human-code-write"
+on = "exec"
+surface = "write_target"
+match = '.*'
+only_if = { listed_in = ".orchestrator/human-code.txt" }
+exempt_when_listed = ".orchestrator/allowed-edits.txt"
+action = "deny"
+why = "That command writes to a human-code path. The human must grant access first."
+
+[[rule]]
+id = "command-too-long"
+on = "exec"
+surface = "command"
+match = '.*'
+action = "deny"
+only_if = { length_over = "max_cmd_len" }
+why = "Command too long. Split it into short single-purpose commands."
+
+[[rule]]
+id = "too-many-statements"
+on = "exec"
+surface = "command"
+match = '.*'
+action = "deny"
+only_if = { statements_over = "max_cmd_stmts" }
+why = "Too many statements chained into one command. Split them and run one at a time."
+
+[[rule]]
+id = "silenced-output"
+on = "exec"
+surface = "command"
+match = '(?i)Out-Null|-Quiet|--quiet|>\s*\$null|2>\s*\$null|/dev/null|-WindowStyle\s+Hidden'
+action = "deny"
+why = "The command silences its output. Everything must stay visible to the human."
+
+[[rule]]
+id = "interactive"
+on = "exec"
+surface = "command"
+match = '(?i)Read-Host|ReadKey|-Verb\s+RunAs|(^|[^a-z])sudo\s|cmd(\.exe)?\s+/c'
+action = "deny"
+why = "The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job."
+
+[[rule]]
+id = "test-authorization"
+on = "exec"
+surface = "command"
+match = '(?i)(^|[^a-z])(npm|pnpm|yarn|bun)\s+(run\s+)?test|(^|[^a-z])(jest|vitest|mocha|pytest|tox|ctest|rspec)([^a-z]|$)|(^|[^a-z])(dotnet|go|cargo|mvn|mvnw|gradle|gradlew|phpunit)\s+\S*test'
+action = "deny"
+unless = { fact = "test_authorized", is = "yes" }
+why = "Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes."
+
+[[rule]]
+id = "toolchain"
+on = "exec"
+surface = "command"
+match = '(?i)(^|[^a-z])(npm|pnpm|yarn|bun|pip|pip3|conda|mamba|poetry|uv|gem|composer|cargo|go|dotnet|apt|apt-get|brew|choco|scoop|winget|pacman|npx|dnf|yum)\s+(install|add|get|i|upgrade|update|env|create)|(^|[^a-z])npx\s'
+action = "deny"
+unless = { fact = "stack_env", is_set = true }
+why = "The human has not declared the existing environment. Do not install or probe on your own."
+
+[[rule]]
+id = "destructive"
+on = "exec"
+surface = "command"
+match = '(?i)rm\s+-rf\s+/[^.]|git\s+push\s+.*--force|drop\s+table|git\s+reset\s+--hard|Remove-Item.*-Recurse.*-Force'
+action = "deny"
+why = "Destructive command. Hand it to the human."
+
+# Approval is evaluated after every specific rule, so a precise reason beats a generic one.
+[[rule]]
+id = "approval-required-edit"
+on = "edit"
+surface = "any"
+match = '.*'
+when = "not_approved"
+action = "require_approval"
+why = "File edits need approval. The human runs the approve subcommand in their own terminal."
+
+[[rule]]
+id = "approval-required-exec"
+on = "exec"
+surface = "any"
+match = '.*'
+when = "not_approved"
+action = "require_approval"
+unless = { computed = "control_plane" }
+why = "Commands need approval. The human runs the approve subcommand in their own terminal."
+
+[[rule]]
+id = "approval-required-action"
+on = "action"
+surface = "any"
+match = '.*'
+when = "not_approved"
+action = "require_approval"
+why = "This tool performs an action and needs approval."
+
+[[rule]]
+id = "repeat"
+on = "exec"
+surface = "command"
+match = '.*'
+action = "ask"
+only_if = { repeats_at_least = "max_cmd_repeat" }
+why = "The same command again, which suggests you are stuck in a loop. The human decides whether to continue."

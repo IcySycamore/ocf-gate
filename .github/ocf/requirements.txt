@@ -1,0 +1,8 @@
+# Runtime dependencies for the OCF gate.
+#
+# The hook entry point is deliberately standard-library only: VS Code starts it directly on the host,
+# so it cannot live in a container, and any missing third-party import would make the gate fail open
+# (silently allowing everything) - the exact failure this project exists to prevent.
+#
+# The only conditional need is a TOML reader on interpreters older than 3.11.
+tomli>=2.0.0; python_version < "3.11"
