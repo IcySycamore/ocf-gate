@@ -1,33 +1,19 @@
 # OCF policy - the single place that decides what the gate does.
 #
-# Edit this file to change gating behaviour
+# Edit this file to change gating behaviour, then run:
+#
+#     python .github/ocf/ocf.py reload
 #
 # Rules are evaluated in file order and the FIRST match wins. Exemptions therefore come first, precise
 # rules next, and broad catch-alls last.
 #
-# when: always | not_approved | approved | enforced | not_enforced
-#   not_approved = approval applies AND the state is not an acting state, i.e. the case that needs a
-#                  human approve. Use it for the approval rules themselves.
-#   enforced     = system.enabled is true, regardless of the current state. Use it for rules that
-#                  protect the orchestrator and for self-authorization, because those must hold even
-#                  while acting. `not_approved` would wrongly switch them off during executing.
-#
-# Condition vocabulary for only_if / unless. Exactly one key per condition:
-#   fact          = "<name>", is = "<value>"   a fact equals a value
-#   fact          = "<name>", is_set = true    a fact is non-empty
-#   listed_in     = "<file>"                   the surface value matches a line in that file
-#   content_matches = "<regex>"                the tool's content or raw tool_input matches
-#   computed      = "<name>"                   a named flag computed in code (see below)
-#   approval      = true                      approval applies and the state is not an acting state
-#
-# Thresholds are not in this list: a rule that needs a number states the number itself
-# (`command_length_over = 400`), so the rule and its limit cannot drift into two files.
-#
-# Computed flags the engine provides:
-#   control_plane  every statement invokes this orchestrator's own entry script by its full relative
-#                  path, so merely mentioning the name elsewhere does not inherit the exemption.
-#   invokes_entry  at least one statement does. Used to bind a human-only subcommand rule to a real
-#                  invocation, so a commit message that happens to contain the word cannot trip it.
+# The vocabulary below is GENERATED from the tables in ocf.py. It used to be written here by hand, and
+# it drifted: it went on offering `when` values the engine had stopped accepting, and following it made
+# the evaluator raise, which the hook turns into a denial of everything. Do not edit it - edit the
+# tables, which the engine actually reads.
+
+# OCF:VOCABULARY:BEGIN
+# OCF:VOCABULARY:END
 
 [system]
 # The single switch for the whole gate. false = the human has handed control back: the approval

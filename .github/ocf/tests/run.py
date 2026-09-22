@@ -753,23 +753,20 @@ def _first_difference(written, rendered):
                                                                len(rendered.splitlines()))
 
 
-def check_generated_instructions():
-    """The written block must equal what the policy renders, and half a block must be refused.
+def check_generated_region(ocf, policy, relative, rendered, markers, writer, must_contain):
+    """One region of one file: idempotent, exactly replaced, half-marked refused, and current.
 
-    Three failures, all silent: a block that drifted from the policy means the model is following
-    rules the human has already changed; a reload that eats the prose around the block means the
-    hand-written contract slowly disappears; and a half-deleted block means the next reload eats
-    whatever followed the marker. All three are probes against a temp root, so the check proves it can
-    pass as well as fail - a guard that only ever reports "no block" cannot tell a correct file from a
-    broken one.
+    Shared by both generated regions rather than written twice. The four failures it looks for are
+    silent in the same way and for the same reasons, and the second copy of a check is how the first
+    copy stops being run: the vocabulary region and the contract region fail identically, so they are
+    checked by one piece of code.
     """
-    ocf = load_ocf_module()
-    policy, _ = ocf.load_policy(REPO)
-    block = ocf.render_instructions(policy)
-    prose = "hand-written contract\n\n"
+    begin, end = markers
+    block = "%s\n%s\n%s" % (begin, rendered, end)
+    prose = "hand-written text\n\n"
     probe = build_root({"state": "executing"})
     try:
-        target = os.path.join(probe, ocf.INSTRUCTIONS_REL)
+        target = os.path.join(probe, relative)
         os.makedirs(os.path.dirname(target), exist_ok=True)
 
         def seed(text):
@@ -781,45 +778,96 @@ def check_generated_instructions():
                 return handle.read()
 
         seed(prose + block + "\n")
-        ocf.write_instructions(probe, policy)
+        writer(probe, policy)
         assert current() == prose + block + "\n", (
-            "reload changed a file that already matched the policy, so it is not idempotent and "
-            "every run rewrites the human's file: %r" % current()[:120])
+            "reload changed %s even though it already matched, so it is not idempotent and every run "
+            "rewrites the human's file: %r" % (relative, current()[:120]))
 
-        seed(prose + ocf.INSTRUCTIONS_BEGIN + "\nstale\n" + ocf.INSTRUCTIONS_END + "\ntail\n")
-        ocf.write_instructions(probe, policy)
+        seed(prose + begin + "\nstale\n" + end + "\ntail\n")
+        writer(probe, policy)
         assert current() == prose + block + "\ntail\n", (
-            "reload did not replace exactly the marked block, so it either lost the prose around it "
-            "or left the stale text in place: %r" % current()[:200])
+            "reload did not replace exactly the marked region of %s, so it either lost the text "
+            "around it or left the stale content in place: %r" % (relative, current()[:200]))
 
-        seed(prose + ocf.INSTRUCTIONS_END + "\ntail\n")
+        seed(prose + end + "\ntail\n")
         try:
-            ocf.write_instructions(probe, policy)
+            writer(probe, policy)
         except ocf.OcfError:
             pass
         else:
-            raise AssertionError("a file with the end marker but no begin marker was rewritten "
-                                 "anyway; that reload would have eaten the prose around it")
+            raise AssertionError("a %s with the end marker but no begin marker was rewritten anyway; "
+                                 "that reload would have eaten the text around it" % relative)
     finally:
         shutil.rmtree(probe, ignore_errors=True)
 
-    path = os.path.join(REPO, ocf.INSTRUCTIONS_REL)
-    with open(path, "r", encoding="utf-8") as handle:
+    with open(os.path.join(REPO, relative), "r", encoding="utf-8") as handle:
         text = handle.read()
-    assert ocf.INSTRUCTIONS_BEGIN in text, (
-        "%s has no generated block. Run `python .github/ocf/ocf.py reload` in your own terminal to "
-        "write it: the soft rules reach the model only through that block." % ocf.INSTRUCTIONS_REL)
-    start = text.index(ocf.INSTRUCTIONS_BEGIN)
-    end = text.index(ocf.INSTRUCTIONS_END, start) + len(ocf.INSTRUCTIONS_END)
-    assert text[start:end] == block, (
-        "the generated block in %s no longer matches what the policy renders, so the model is reading "
-        "a contract the human has already changed - the soft rules, or the command table, or the state "
-        "table. Run `python .github/ocf/ocf.py reload` in your own terminal. First difference: %r"
-        % (ocf.INSTRUCTIONS_REL, _first_difference(text[start:end], block)))
+    assert begin in text, (
+        "%s has no generated region. Run `python .github/ocf/ocf.py reload` in your own terminal: "
+        "%s" % (relative, must_contain))
+    start = text.index(begin)
+    stop = text.index(end, start) + len(end)
+    assert text[start:stop] == block, (
+        "the generated region of %s no longer matches what %s renders, so it is describing "
+        "something other than what the engine does. Run `python .github/ocf/ocf.py reload` in your "
+        "own terminal. First difference: %r"
+        % (relative, rendered.name if hasattr(rendered, "name") else "the code",
+           _first_difference(text[start:stop], block)))
+
+
+def check_generated_instructions():
+    """The written contract must equal what the policy renders, and half a region must be refused."""
+    ocf = load_ocf_module()
+    policy, _ = ocf.load_policy(REPO)
+    check_generated_region(ocf, policy, ocf.INSTRUCTIONS_REL, ocf.render_instructions(policy),
+                           (ocf.INSTRUCTIONS_BEGIN, ocf.INSTRUCTIONS_END), ocf.write_instructions,
+                           "the soft rules reach the model only through that region")
+
+
+def check_vocabulary_region():
+    """The policy file must document exactly the identifiers the engine reads - both directions.
+
+    One direction is the region on disk matching the renderer. The other is the vocabulary itself: a
+    key the engine reads with no description is a key nobody can use correctly, and a description of a
+    key the engine no longer reads is an instruction to write a policy that fails. The prose version of
+    this list did exactly that, which is why it is generated now.
+    """
+    ocf = load_ocf_module()
+    policy, _ = ocf.load_policy(REPO)
+    described = {name for name, _ in ocf.CONDITION_HELP}
+    implemented = (set(ocf.FLAT_CONDITIONS) | set(ocf.FLAT_VALUE_CONDITIONS)
+                   | set(ocf.FLAT_FACT_KEYS) | {"listed_in"})
+    missing = sorted(implemented - described)
+    invented = sorted(described - implemented)
+    assert not missing, ("%s is read by the engine but has no description, so nobody can write a "
+                         "correct rule with it" % ", ".join(missing))
+    assert not invented, ("%s is documented as a condition but the engine does not read it, so a "
+                          "policy written from this documentation would fail" % ", ".join(invented))
+    for label, help_table, values in (
+            ("when", ocf.WHEN_HELP, ocf.WHEN_VALUES),
+            ("result", ocf.ACTION_HELP, ocf.ACTION_VALUES),
+            ("occasion", ocf.OCCASION_HELP, ocf.SOFT_OCCASIONS),
+            ("[hooks]", ocf.HOOK_HELP, tuple(ocf.DEFAULT_POLICY["hooks"])),
+            ("[section]", ocf.SECTION_HELP,
+             tuple(name for name in ocf.SECTION_KEYS)),
+            ("[rule] field", ocf.RULE_FIELD_HELP + ocf.RULE_FIELD_HELP_OLDER, ocf.RULE_KEYS),
+    ):
+        documented = {name for name, _ in help_table}
+        assert documented == set(values), (
+            "the documentation of %s and the engine disagree: documented but unread %s; read but "
+            "undocumented %s"
+            % (label, sorted(documented - set(values)), sorted(set(values) - documented)))
+    check_generated_region(ocf, policy, ocf.POLICY_REL, ocf.render_vocabulary(),
+                           (ocf.VOCAB_BEGIN, ocf.VOCAB_END), ocf.write_vocabulary,
+                           "the vocabulary region is what documents the policy's interface")
 
 
 def test_generated_instructions():
     check_generated_instructions()
+
+
+def test_vocabulary_region():
+    check_vocabulary_region()
 
 
 def check_hooks_wiring():
@@ -983,6 +1031,7 @@ CHECKS = (
     ("rule-text-flattened", test_rule_text_is_flattened),
     ("no-invented-spaces", test_no_invented_spaces),
     ("generated-instructions", test_generated_instructions),
+    ("vocabulary-region", test_vocabulary_region),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),

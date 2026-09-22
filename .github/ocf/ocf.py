@@ -383,7 +383,153 @@ COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
 SOFT_OCCASIONS = ("session-start", "ask", "plan", "act", "answer")
 RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
              # The newer shape. Both are accepted while the policy is converted rule by rule.
-             "enabled", "kind", "label", "result", "if", "verify")
+             "enabled", "kind", "label", "result", "if")
+
+
+# ---------------------------------------------------------------------------
+# The vocabulary, described once
+# ---------------------------------------------------------------------------
+#
+# A policy rule may name a section, a key, a condition or a value - and nothing else. That list is the
+# policy file's interface, so it has to be documented; it used to be documented a second time as prose
+# in the policy file's own header, and the two drifted. The prose went on offering five `when` values
+# after the engine accepted two, and following it raised inside the evaluator, which the hook turns into
+# a denial of everything - a documented instruction that locks the gate. So the descriptions live here,
+# `reload` renders them into the marked region of policy.toml, and a structural check compares the two
+# sets in both directions: a key with no description fails, and a description of a key that no longer
+# exists fails.
+
+SECTION_HELP = (
+    ("system", "enabled: the maintenance switch. False stops the three `when = enforced` rules (the "
+               "orchestrator's self-protection and the self-authorization rule) and the three approval "
+               "rules, and nothing else - the protected list is judged by a rule with no `when`, so it "
+               "still applies"),
+    ("paths", "state_dir: where the runtime lives. Everything else is a fixed filename, not a setting"),
+    ("limits", "fail_budget: consecutive failures before exec-class tools are locked"),
+    ("approval", "allowed_states: the states acting is allowed in. min_reason_len: shortest approve reason"),
+    ("hooks", "which events the orchestrator is installed on; reload rewrites the wiring from these"),
+    ("unknown_tool", "action: verdict for an unrecognised tool that looks like it acts"),
+    ("tools", "the tool classes, and the payload field each tool keeps its command in"),
+    ("selftest", "canaries: one must deny and one must allow, or the gate is not proven alive"),
+    ("rule", "the rules themselves, evaluated in file order, first match wins"),
+)
+
+RULE_FIELD_HELP = (
+    ("id", "the name every verdict carries, so a decision can be traced back to its rule. The tests "
+           "assert these, so renaming one fails instead of drifting"),
+    ("enabled", "true or false. A switched-off rule is not evaluated at all"),
+    ("kind", "hard: the hook reads it and gives a verdict. soft: reload writes it into the contract"),
+    ("label", "the name a soft rule is listed under in the generated contract"),
+    ("if", "the conditions that must all hold. This is the whole of a rule's logic"),
+    ("unless", "the exception. For a hard rule a condition table; for a soft rule a sentence the model applies"),
+    ("result", "hard: allow | ask | deny | require_approval. soft: the sentence to inject"),
+    ("why", "shown to the agent in the verdict, so write what to fix, not what went wrong"),
+)
+
+# The older shape. Three rules are still written this way: the two that protect the orchestrator's own
+# files and the one against writing a human-only subcommand into a script. They are migrated last, on
+# purpose, because the migration is what removes the machine's ability to edit them.
+RULE_FIELD_HELP_OLDER = (
+    ("on", "tool class this rule applies to: edit | exec | action | visual | any"),
+    ("surface", "which text to match: tool | command | path | write_target | content | any"),
+    ("match", "regex tried against every candidate value of that surface"),
+    ("when", "always | enforced (system.enabled is true, regardless of state)"),
+    ("action", "allow | ask | deny | require_approval"),
+    ("only_if", "an extra condition table that must hold"),
+)
+
+CONDITION_HELP = (
+    ("class", "the tool's class, or the class a tool carrying a command is judged as: edit, exec, action, visual"),
+    ("state", "the current state: ready, asking, planning, executing, reporting, blocked"),
+    ("tool", "the tool name as the editor reports it"),
+    ("command_matches", "regex against the command string"),
+    ("command_length_over", "the command is longer than this many characters"),
+    ("command_statements_over", "the command has more statements than this, counted with quotes blanked"),
+    ("command_repeats_at_least", "this exact command has already run at least this many times"),
+    ("content_matches", "regex against what would be written, plus the raw tool input"),
+    ("environment_declared", "the human has declared the existing environment (the stack_env fact)"),
+    ("approval", "true when a human approve is still outstanding, i.e. the state is not an acting state"),
+    ("computed", "a flag computed from the command. See the list below"),
+    ("fact", "a fact recorded by the human or the hook, compared with is / is_not / is_set"),
+    ("is_set", "with fact: the fact is non-empty (true) or empty (false)"),
+    ("is", "with fact: the fact equals this value"),
+    ("is_not", "with fact: the fact does not equal this value"),
+    ("path_matches", "regex against each path the action touches. Judged per path, never as a batch"),
+    ("touches_protected", "each path the action touches is on the protected list, judged per path"),
+    ("listed_in", "older shape: each candidate value appears in that list file"),
+)
+
+COMPUTED_HELP = (
+    ("control_plane", "every statement runs the entry script by its full relative path, so reading the "
+                      "state is not acting and needs no approval"),
+    ("invokes_entry", "at least one statement does"),
+    ("human_only_call", "the entry script is invoked with a human-only subcommand as its argument"),
+)
+
+WHEN_HELP = (
+    ("always", "always"),
+    ("enforced", "system.enabled is true, regardless of the current state"),
+)
+
+ACTION_HELP = (
+    ("allow", "let it through"),
+    ("ask", "the editor asks the human once; a pre-approval may swallow this"),
+    ("deny", "refuse, and say why. Handled before any approval logic, so nothing auto-approves past it"),
+    ("require_approval", "refuse, and tell the agent to have the human run the approve command"),
+)
+
+OCCASION_HELP = (
+    ("session-start", "a session begins"),
+    ("ask", "the human's statement is being read and gaps are being grilled"),
+    ("plan", "a plan is being written or audited"),
+    ("act", "a tool is about to be used"),
+    ("answer", "every answer"),
+)
+
+HOOK_HELP = (
+    ("enabled", "the master switch. false writes a wiring file with no hooks: nothing is installed"),
+    ("session_start", "run the self-check when a session begins"),
+    ("user_prompt", "advance the state machine and report it on each human message"),
+    ("pre_tool_use", "the gate. Switching it off stops everything being refused"),
+    ("post_tool_use", "warn when a command produced no progress"),
+)
+
+
+def render_vocabulary():
+    """Render the policy file's interface as comments. Pure, so the file can be compared to it."""
+    lines = ["# Every identifier this file may use, and what it means.",
+             "# Rendered by `python .github/ocf/ocf.py reload` from the tables in ocf.py, so it cannot",
+             "# describe a key the engine does not read, or miss one it does.",
+             "",
+             "# [sections]"]
+    lines += ["#   %-14s %s" % (name, help_text) for name, help_text in SECTION_HELP]
+    lines += ["",
+              "# [rule] fields. Two shapes are accepted while the older one is converted away, and",
+              "# this region is generated - edit the rules, not this text."]
+    lines += ["#   %-14s %s" % (name, help_text) for name, help_text in RULE_FIELD_HELP]
+    lines += ["",
+              "#   the older shape, still used by the rules that protect the orchestrator itself:"]
+    lines += ["#   %-14s %s" % (name, help_text) for name, help_text in RULE_FIELD_HELP_OLDER]
+    lines += ["",
+              "# [rule.if] conditions. Each key is one condition; the value is what it compares against,",
+              "# which is usually a regex or a number."]
+    lines += ["#   %-22s %s" % (name, help_text) for name, help_text in CONDITION_HELP]
+    lines += ["",
+              "# computed flags, named by the `computed` condition:"]
+    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in COMPUTED_HELP]
+    lines += ["",
+              "# `when` (older shape) accepts:"]
+    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in WHEN_HELP]
+    lines += ["",
+              "# `result` and `action` accept:"]
+    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in ACTION_HELP]
+    lines += ["",
+              "# a soft rule's occasion, i.e. when its sentence is in force:"]
+    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in OCCASION_HELP]
+    lines += ["",
+              "# [hooks] switches:"]
+    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in HOOK_HELP]
+    return "\n".join(lines)
 
 
 def policy_findings(policy):
@@ -518,6 +664,12 @@ INSTRUCTIONS_REL = ".github/copilot-instructions.md"
 INSTRUCTIONS_BEGIN = "<!-- OCF:GENERATED -->"
 INSTRUCTIONS_END = "<!-- OCF:END -->"
 
+# The policy file is hand-written except for the region holding the vocabulary, which is rendered from
+# the tables below. Its markers are TOML comments rather than HTML ones, which is the only way in which
+# the two generated regions differ.
+VOCAB_BEGIN = "# OCF:VOCABULARY:BEGIN"
+VOCAB_END = "# OCF:VOCABULARY:END"
+
 
 def soft_rules(policy):
     return [rule for rule in policy.get("rule", [])
@@ -564,8 +716,7 @@ def render_instructions(policy):
     sentence is not compared to anything. Everything derivable is rendered from the table it derives
     from, and everything that is genuinely a rule is a rule.
     """
-    lines = [INSTRUCTIONS_BEGIN,
-             "<!-- Written by `python .github/ocf/ocf.py reload` from the tables in this program and",
+    lines = ["<!-- Written by `python .github/ocf/ocf.py reload` from the tables in this program and",
              "     the rules in .github/ocf/policy.toml. Do not edit by hand - the next reload",
              "     overwrites everything above the OCF:END marker. Edit the rules in that file and",
              "     run reload. Anything you add below the marker is yours and survives. -->",
@@ -637,9 +788,7 @@ def render_instructions(policy):
               "",
               "Fix the precondition it names: supply the missing fact, split the command, stop "
               "silencing output, go ask the human. Never rewrite your way around it. Circumventing a "
-              "gate is a serious violation.",
-              "",
-              INSTRUCTIONS_END]
+              "gate is a serious violation."]
     return "\n".join(lines)
 
 
@@ -678,52 +827,72 @@ def render_hooks_json(policy):
     return json.dumps({"hooks": body}, indent=2) + "\n"
 
 
+def sync_generated(root, relative, rendered, markers=None):
+    """Make a generated file match what the renderer produced, and report what happened.
+
+    One implementation for every generated file, because there were two and they had already diverged:
+    one replaced a marked region and preserved everything outside it, the other rewrote the whole file,
+    and the whole-file one had lost the subcommand from every hook it wrote - a wiring file that starts
+    the program without telling it to be a hook, which the editor reads as "no objection". Everything
+    that is easy to get wrong is the same either way: line endings, a half-deleted marker pair, and
+    telling "already current" apart from "rewritten".
+
+    `markers` is a (begin, end) pair for a region inside a hand-written file, or None for a file this
+    program owns outright. In the first case the text outside the markers is the human's and survives.
+    A file missing one of the two markers is refused rather than guessed at: guessing where a
+    half-deleted region used to end would eat whatever followed it.
+    """
+    path = os.path.join(root, relative)
+    text = read_text(path)
+    if text is None:
+        raise OcfError("policy", "%s does not exist" % relative)
+    if markers is None:
+        if text == rendered:
+            return "%s already matches" % relative
+        write_text(path, rendered)
+        return "rewrote %s" % relative
+    begin, end = markers
+    block = "%s\n%s\n%s" % (begin, rendered, end)
+    start = text.find(begin)
+    if start < 0:
+        if text.find(end) >= 0:
+            raise OcfError("policy", "%s has the end marker but not the begin marker; refusing to "
+                                     "guess where the generated region starts" % relative)
+        separator = "\n\n" if text.strip() else ""
+        write_text(path, text.rstrip("\n") + separator + block + "\n")
+        return "appended the generated region to %s" % relative
+    stop = text.find(end, start)
+    if stop < 0:
+        raise OcfError("policy", "%s has the begin marker but not the end marker; refusing to guess "
+                                 "where the generated region stops" % relative)
+    updated = text[:start] + block + text[stop + len(end):]
+    if updated == text:
+        return "%s already matches" % relative
+    write_text(path, updated)
+    return "rewrote the generated region in %s" % relative
+
+
 def write_hooks(root, policy):
-    path = os.path.join(root, HOOKS_REL)
-    rendered = render_hooks_json(policy)
-    current = read_text(path)
-    if current == rendered:
-        return "%s already matches the switches" % HOOKS_REL
-    write_text(path, rendered)
+    reported = sync_generated(root, HOOKS_REL, render_hooks_json(policy))
+    if "already matches" in reported:
+        return reported
     off = [name for switch, name, _ in HOOK_EVENTS if not hook_enabled(policy, name)]
     if not hook_enabled(policy, "PreToolUse"):
-        return ("rewrote %s. The gate is not installed now, so nothing is refused. Reload the VS Code "
-                "window for it to take effect: hooks are read when the window starts." % HOOKS_REL)
-    return ("rewrote %s (%s off). Reload the VS Code window for it to take effect: hooks are read "
-            "when the window starts and are not re-read afterwards."
-            % (HOOKS_REL, ", ".join(off) if off else "no event"))
+        return ("%s. The gate is not installed now, so nothing is refused. Reload the VS Code window "
+                "for it to take effect: hooks are read when the window starts." % reported)
+    return ("%s (%s off). Reload the VS Code window for it to take effect: hooks are read when the "
+            "window starts and are not re-read afterwards."
+            % (reported, ", ".join(off) if off else "no event"))
 
 
 def write_instructions(root, policy):
-    """Replace the marked block in place, or append it when the file has none.
+    return sync_generated(root, INSTRUCTIONS_REL, render_instructions(policy),
+                          markers=(INSTRUCTIONS_BEGIN, INSTRUCTIONS_END))
 
-    Everything outside the markers is the human's own prose and is left alone, which is the only
-    reason a generated block can live in a hand-written file. A file that has lost one of the two
-    markers is left untouched and reported: guessing where a half-deleted block used to end would
-    silently eat whatever followed it.
-    """
-    path = os.path.join(root, INSTRUCTIONS_REL)
-    text = read_text(path)
-    if text is None:
-        raise OcfError("policy", "%s does not exist" % INSTRUCTIONS_REL)
-    block = render_instructions(policy)
-    start = text.find(INSTRUCTIONS_BEGIN)
-    if start < 0:
-        if text.find(INSTRUCTIONS_END) >= 0:
-            raise OcfError("policy", "%s has the end marker but not the begin marker; refusing to "
-                                     "guess where the generated block starts" % INSTRUCTIONS_REL)
-        write_text(path, text.rstrip("\n") + "\n\n" + block + "\n")
-        return "appended the generated block to %s" % INSTRUCTIONS_REL
-    end = text.find(INSTRUCTIONS_END, start)
-    if end < 0:
-        raise OcfError("policy", "%s has the begin marker but not the end marker; refusing to guess "
-                                 "where the generated block stops" % INSTRUCTIONS_REL)
-    end += len(INSTRUCTIONS_END)
-    updated = text[:start] + block + text[end:]
-    if updated == text:
-        return "%s already matches the policy" % INSTRUCTIONS_REL
-    write_text(path, updated)
-    return "rewrote the generated block in %s" % INSTRUCTIONS_REL
+
+def write_vocabulary(root, policy):
+    return sync_generated(root, POLICY_REL, render_vocabulary(),
+                          markers=(VOCAB_BEGIN, VOCAB_END))
 
 
 # ---------------------------------------------------------------------------
@@ -2124,6 +2293,7 @@ def cmd_reload(root, policy, args):
         out("refusing to reload: the policy did not load cleanly, so nothing was changed")
         return 1
     out(write_instructions(root, policy))
+    out(write_vocabulary(root, policy))
     out(write_hooks(root, policy))
     rules = soft_rules(policy)
     on = [rule for rule in rules if as_bool(rule.get("enabled", True))]
