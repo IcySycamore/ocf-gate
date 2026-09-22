@@ -336,9 +336,14 @@ def check_gate_files_protected():
         if not rules:
             problems.append("policy.toml has no %s rule" % rule_id)
             continue
-        pattern = rules[0].get("match")
+        # The pattern moved into the rule's condition table when the three rules were converted to the
+        # one shape. Read it from wherever it is rather than from a remembered field name: the field name
+        # is exactly what changed, and a check that reads a field nobody writes reports "no pattern"
+        # while the pattern is sitting right there.
+        rule = rules[0]
+        pattern = rule.get("match") or (rule.get("if") or {}).get("path_matches")
         if not pattern:
-            problems.append("%s has no match pattern" % rule_id)
+            problems.append("%s has no path pattern" % rule_id)
             continue
         for path in PROTECTED_BY_POLICY:
             if not re.search(pattern, path, re.I):

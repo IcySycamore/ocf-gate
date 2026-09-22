@@ -308,35 +308,41 @@ class           = "exec"
 command_matches = 'advance\s+(?!asking\b|planning\b|reporting\b|ready\b|blocked\b)[A-Za-z-]+'
 
 [[rule]]
-id = "self-authorization-write"
-on = "write"
-surface = "path"
-match = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
-when = "enforced"
-action = "deny"
-only_if = { content_matches = '(?i)ocf\.(py|ps1|sh).{0,300}?(approve|reject|confirm|allow|deny|reload)' }
-why = "Writing a human-only subcommand into an executable file is self-authorization."
+id      = "self-authorization-write"
+enabled = true
+result  = "deny"
+why     = "Writing a human-only subcommand into an executable file is self-authorization."
+
+[rule.if]
+class           = "write"
+path_matches    = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
+content_matches = '(?i)ocf\.(py|ps1|sh).{0,300}?(approve|reject|confirm|allow|deny|reload)'
+computed        = "enforced"
 
 # The orchestrator's own files. Includes the rules document, because a rules document the machine can
 # rewrite is not a rule. `tests/run.py` asserts that this pattern still matches every one of them, so
 # moving a file without moving the pattern fails a test instead of opening a hole.
 [[rule]]
-id = "self-protection-path"
-on = "write"
-surface = "path"
-match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/(state|facts|journal\.log|exec\.log)$'
-when = "enforced"
-action = "deny"
-why = "The orchestrator's own files. The human edits them by hand, or sets system.enabled = false."
+id      = "self-protection-path"
+enabled = true
+result  = "deny"
+why     = "The orchestrator's own files. The human edits them by hand, or removes `enforced` from these three rules."
+
+[rule.if]
+class        = "write"
+path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/(state|facts|journal\.log|exec\.log)$'
+computed     = "enforced"
 
 [[rule]]
-id = "self-protection-write"
-on = "exec"
-surface = "write_target"
-match = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/'
-when = "enforced"
-action = "deny"
-why = "A command may not write to the orchestrator's own files."
+id      = "self-protection-write"
+enabled = true
+result  = "deny"
+why     = "A command may not write to the orchestrator's own files."
+
+[rule.if]
+class        = "exec"
+path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/'
+computed     = "enforced"
 
 # The protected list. One rule covers both the editing tools and the terminal, because the condition
 # judges the paths the action touches wherever they came from - which is why no "-write" twin is needed.

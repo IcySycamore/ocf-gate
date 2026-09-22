@@ -373,7 +373,7 @@ CONDITION_KEYS = ("fact", "is_set", "is", "listed_in", "content_matches", "compu
 WHEN_VALUES = ("always", "enforced")
 SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
 ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
-COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
+COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call", "enforced")
 
 # When a soft rule applies. A soft rule is the one kind of rule no hook can enforce - nothing can
 # check whether a sentence was written - so instead of a verdict it carries the sentence itself, and
@@ -465,6 +465,9 @@ COMPUTED_HELP = (
                       "state is not acting and needs no approval"),
     ("invokes_entry", "at least one statement does"),
     ("human_only_call", "the entry script is invoked with a human-only subcommand as its argument"),
+    ("enforced", "system.enabled is true: the maintenance window is closed. The three rules that "
+                  "protect the orchestrator's own files are the only users, and removing this word "
+                  "from them is what makes that protection unconditional"),
 )
 
 WHEN_HELP = (
@@ -1376,6 +1379,9 @@ class Context(object):
         self.raw_json = json.dumps(payload, ensure_ascii=True, sort_keys=True)
         self.content = "\n".join(collect_content(payload))
         self.computed = computed_flags(self.command)
+        # Gathered here rather than in computed_flags, which sees only the command: this one is about the
+        # policy and the state.
+        self.computed["enforced"] = self.enabled
         self.paths = [norm_path(root, item) for item in collect_paths(payload.get("tool_input") or {})]
         self.paths = [item for item in self.paths if item]
         self.targets = write_targets(root, self.command)
