@@ -4,6 +4,15 @@
 > asks for a file.
 > The headings stay in English. Fill every other line in the language the human is using.
 
+## Plan vs actual
+
+| Planned step | Outcome | Deviation and reason |
+| ------------ | ------- | -------------------- |
+
+## Open items
+
+- ... (reason, and the suggested next step)
+
 ## Change list
 
 | File           | Action                | Note         |
@@ -15,15 +24,6 @@
 - Files: ADD n / MODIFY n / DELETE n
 - Lines: about +n / -n
 - No unplanned changes: yes / no (if no, list each one and say why)
-
-## Plan vs actual
-
-| Planned step | Outcome | Deviation and reason |
-| ------------ | ------- | -------------------- |
-
-## Open items
-
-- ... (reason, and the suggested next step)
 
 ## Audit summary
 

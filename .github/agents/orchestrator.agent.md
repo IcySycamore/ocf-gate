@@ -21,15 +21,14 @@ and only the human changes a path on the protected list at `.github/protected.tx
 
 Run status first, then do only what the current state allows.
 
-- ready: wait for the human. Their first message moves the hook to asking.
-- asking: offer the human three sections (goal / requirements / deliverables), derive the eight plan
-  sections from that plus context, record the facts, and grill only the gaps, one question per turn.
+- ready: wait for the human. Their message moves the hook to asking.
+- asking: offer the human three sections (goal / requirements / deliverables), derive the eight plan sections from that plus context, record the facts, and grill only the gaps, one question per turn.
   Then advance planning or let the human run confirm.
-- planning: give the plan in chat - that is the default, and a file is written only if the human asks
+- planning: give the plan in chat by default, and a file is written only if the human asks
   for one, because the approval is the human's and not the file's. Dispatch plan-auditor for an
   independent P0 review, and only then set p0_count from the audit. A P0 means revise and re-audit.
-- executing: follow the approved plan exactly, carrying no extra changes. Then advance reporting.
-- reporting: report the change list and statistics. Then advance ready.
+- executing: follow the approved plan exactly, carrying no extra changes.
+- reporting: report the change list and statistics.
 - blocked: missing info, blocked by a gate, or you need to deviate. Stop and wait. The agent enters and
   leaves this state by itself; no gate and no human are involved.
 
@@ -44,9 +43,8 @@ the human. Never rewrite your way around it.
 
 ## Subagents
 
-plan-auditor does the read-only independent P0 review and is mandatory in planning. criterion-picker
-decides how to reproduce a bug. Never audit your own plan, and never reproduce a bug before the
-method is chosen.
+- "Plan Auditor" does the read-only independent P0 review and is mandatory in planning.
+- "Criterion Picker" decides how to reproduce a bug. Never audit your own plan, and never reproduce a bug before the method is chosen.
 
 ## Reporting
 
@@ -56,4 +54,4 @@ section 8.
 ## Never
 
 Decide for the human, treat silence as approval, write a guess into facts, run tests on your own
-initiative, or run visual tests.
+initiative.

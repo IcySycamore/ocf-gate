@@ -421,15 +421,18 @@ def scan_non_ascii():
 
 # The ASCII rule keeps a class of encoding bugs out of code and out of everything the toolchain
 # touches. These files are not code that runs in the toolchain: policy.toml is the human's own rules,
-# copilot-instructions.md is prose addressed to the human and the model, and run.py has to be able to
-# state the real text it asserts on - a check about where spaces land in Chinese cannot be written in
-# English and still test Chinese. ocf.py is deliberately NOT on this list, because its output is what
-# reaches a console that may not be UTF-8. The exemption is a list of named paths rather than a suffix
-# or a folder, because the value of the rule is that it has no convenient way around it: a new file has
-# to argue for itself here.
+# copilot-instructions.md and the reference region of work-control-flow.md are prose addressed to the
+# human and the model in the language the project is run in, and run.py has to be able to state the real
+# text it asserts on - a check about where spaces land in Chinese cannot be written in English and still
+# test Chinese. work-control-flow.md joins the list only because of its reference region: that region is
+# rendered from the rules, so it necessarily inherits the language the human wrote them in. ocf.py is
+# deliberately NOT on this list, because its output is what reaches a console that may not be UTF-8. The
+# exemption is a list of named paths rather than a suffix or a folder, because the value of the rule is
+# that it has no convenient way around it: a new file has to argue for itself here.
 NON_ASCII_ALLOWED = (
     ".github/ocf/policy.toml",
     ".github/copilot-instructions.md",
+    ".github/work-control-flow.md",
     ".github/ocf/tests/run.py",
 )
 
@@ -988,6 +991,52 @@ def test_line_endings_are_normalised():
     check_line_endings_are_normalised()
 
 
+def check_class_names_are_known():
+    """Every class a rule names must be one the engine knows, and an unknown one must raise.
+
+    This is how `edit` became `write`: the engine's list changed, two rules kept the old name, and both
+    of them quietly stopped applying - `protected-file` went from refusing to allowing. The validator
+    reported it, but the new-shape evaluator did not raise, so nothing forced the issue; only reading the
+    output did. Two halves here: the shipped policy must contain no unknown class name, and the
+    evaluator must refuse one rather than compare it unequal and return.
+    """
+    ocf = load_ocf_module()
+    known = set(ocf.CLASS_ORDER) | {"unknown", "any"}
+    policy, _ = ocf.load_policy(REPO)
+    problems = []
+    for rule in policy.get("rule", []):
+        where = rule.get("id", "unnamed")
+        spelled = [name.strip() for name in str(rule.get("on", "")).split(",") if name.strip()]
+        spelled += [name.strip() for name
+                    in str((rule.get("if") or {}).get("class", "")).split(",") if name.strip()]
+        for name in spelled:
+            if name not in known:
+                problems.append("rule %s names the class %r" % (where, name))
+    assert not problems, ("a rule names a class the engine does not know, so it can never match and the "
+                          "rule is off while reading as on: %s" % "; ".join(problems))
+
+    class Stub(object):
+        effective = "write"
+        tool = "probe"
+
+        def surface(self, name):
+            return []
+
+    try:
+        ocf.evaluate_conditions(Stub(), {"id": "probe"}, {"class": "not_a_class"})
+    except ocf.OcfError:
+        pass
+    else:
+        raise AssertionError("an unknown class compared unequal and returned, so a rule misspelling its "
+                             "own class silently stops applying instead of failing loudly")
+    assert ocf.evaluate_conditions(Stub(), {"id": "probe"}, {"class": "write"}) == ["probe"], (
+        "the class condition no longer matches its own class name, so every class-scoped rule is off")
+
+
+def test_class_names_are_known():
+    check_class_names_are_known()
+
+
 def check_no_invented_spaces():
     """Every space in the rendered contract must sit next to an ASCII character.
 
@@ -1058,6 +1107,7 @@ CHECKS = (
     ("line-endings", test_line_endings_are_normalised),
     ("rule-text-flattened", test_rule_text_is_flattened),
     ("no-invented-spaces", test_no_invented_spaces),
+    ("class-names-known", test_class_names_are_known),
     ("generated-instructions", test_generated_instructions),
     ("vocabulary-region", test_vocabulary_region),
     ("reference-region", test_reference_region),

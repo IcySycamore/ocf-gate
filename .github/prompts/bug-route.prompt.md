@@ -25,5 +25,4 @@ lock actually is: any message from the human clears it, and the gate cannot tell
 from an injected one or a perfunctory one. So it stops you from looping; it is not evidence that the
 human has understood anything.
 
-Do not change code before a reproduction loop exists, do not rule out several blocks at once, and do
-not run visual or screenshot tests or work around that ban.
+Do not change code before a reproduction loop exists, do not rule out several blocks at once

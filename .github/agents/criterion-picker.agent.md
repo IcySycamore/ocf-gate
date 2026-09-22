@@ -40,7 +40,7 @@ the method before touching anything" into a capability limit rather than a reque
 
 ## Requirements
 
-Read-only. No file edits and no commands.
+Read-only.
 Explain why the other two methods were rejected.
 If you choose to actually run it, draft the minimal runnable command and do not run it. Execution
 happens through the orchestrator after approval.

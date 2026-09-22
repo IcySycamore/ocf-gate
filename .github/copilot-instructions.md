@@ -68,5 +68,4 @@ No hook can enforce these: nothing can check whether a sentence was written. The
 ## When a gate blocks you
 
 Fix the precondition it names: supply the missing fact, split the command, stop silencing output, go ask the human. Never rewrite your way around it. Circumventing a gate is a serious violation.
-
 <!-- OCF:END -->

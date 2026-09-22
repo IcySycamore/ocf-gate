@@ -84,6 +84,66 @@ where a gate belonged, and claimed plan-schema wants eight sections when it read
 disagrees with your expectation, this section is right.
 
 <!-- OCF:REFERENCE:BEGIN -->
+### Gates
+
+A gate is a precondition of a state change, not a rule about tool calls. Failing one refuses the transition and names what is missing.
+
+`asking -> planning`
+- `context` - the five intake items are present and each at least 4 characters
+- `docs-decision` - docs_decision is create or skip
+- `grill-valid` - grill_rounds is at least 1, consensus at least 10 characters, grill_used is with-docs or me
+
+`planning -> executing`
+- `plan-schema` - a plan file, if one exists, carries `## Steps` and `## Files`, both non-empty. An absent file passes: the plan is a conversation artefact by default
+- `zero-p0` - p0_count is 0
+- `protected-list-clear` - the plan's `## Files` section names no path on the protected list
+- `stack-env` - stack_env is declared, which means the human said what the environment is rather than the machine probing for it
+
+### Tool classes
+
+The class decides which rules are consulted and how a tool is judged. Membership is here rather than in prose because prose drifts; a tool not listed is `unknown`.
+
+- `visual`: `screenshot_page`, `view_image`, `run_playwright_code`, `mcp_playwright_browser_take_screenshot`, `mcp_playwright_browser_run_code_unsafe`
+- `always_allow` (never gated, and the strict fallback keeps both): `runSubagent`, `manage_todo_list`, `vscode_askQuestions`, `memory`
+- `read_only` (never gated, and the strict fallback keeps both): `read_file`, `grep_search`, `file_search`, `list_dir`, `get_errors`, `copilot_getNotebookSummary`, `read_notebook_cell_output`, `vscode_listCodeUsages`
+- `edit`: `create_file`, `create_directory`, `replace_string_in_file`, `multi_replace_string_in_file`, `edit_notebook_file`, `vscode_renameSymbol`, `mcp_github_mcp_se_create_or_update_file`, `mcp_github_mcp_se_delete_file`, `mcp_github_mcp_se_push_files`, `mcp_github_mcp_se_fork_repository`
+- `exec`: `run_in_terminal`, `run_notebook_cell`, `mcp_playwright_browser_evaluate`
+- `action`: `create_and_run_task`, `install_python_packages`, `install_extension`, `debug_java_application`, `configure_python_environment`, `create_new_workspace`, `create_new_jupyter_notebook`
+
+`visual` is checked before `always_allow`, so a tool that both reads an image and is listed as always-allowed is still refused.
+
+### Rules
+
+In file order, first match wins. The conditions are named rather than quoted: the values live in `.github/ocf/policy.toml`, which is where they are meant to be read and changed.
+
+- `plan-md-exempt` -> `allow` - The gate itself asks for this artifact. [class, path_matches]
+- `failure-budget` -> `deny` - Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies. [class, fact, is]
+- `visual-tool` -> `deny` - The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not. [class]
+- `visual-command` -> `deny` - The machine may never run visual or screenshot tests. [class, command_matches]
+- `human-only-subcommand` -> `deny` - Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead. [class, computed]
+- `advance-target` -> `deny` - The agent may not advance to that state. Entering executing is a human act. [class, command_matches]
+- `self-authorization-write` -> `deny` - Writing a human-only subcommand into an executable file is self-authorization. [content_matches, when=enforced]
+- `self-protection-path` -> `deny` - The orchestrator's own files. The human edits them by hand, or sets system.enabled = false. [when=enforced]
+- `self-protection-write` -> `deny` - A command may not write to the orchestrator's own files. [when=enforced]
+- `protected-file` -> `deny` - That path is on the protected list. Only the human may change it. [class, touches_protected]
+- `command-too-long` -> `deny` - Command too long. Split it into short single-purpose commands. [class, command_length_over]
+- `too-many-statements` -> `deny` - Too many statements chained into one command. Split them and run one at a time. [class, command_statements_over]
+- `silenced-output` -> `deny` - The command silences its output. Everything must stay visible to the human. [class, command_matches]
+- `interactive` -> `deny` - The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job. [class, command_matches]
+- `test-authorization` -> `deny` - Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes. [class, command_matches, fact, is_not]
+- `toolchain` -> `deny` - The human has not declared the existing environment. Do not install or probe on your own. [class, command_matches, fact, is_set]
+- `destructive` -> `deny` - Destructive command. Hand it to the human. [class, command_matches]
+- `approval-required-edit` -> `require_approval` - File edits need approval. The human runs the approve subcommand in their own terminal. [approval, class]
+- `approval-required-exec` -> `require_approval` - Commands need approval. The human runs the approve subcommand in their own terminal. [approval, class, unless]
+- `approval-required-action` -> `require_approval` - This tool performs an action and needs approval. [approval, class]
+- `repeat` -> `ask` - The same command again, which suggests you are stuck in a loop. The human decides whether to continue. [class, command_repeats_at_least]
+- `intake-grilling` (soft, occasion `ask`) - 从人类回复和上下文推出规定的8项背景信息
+- `independent-audit` (soft, occasion `plan`) - 审计交给子代理，且 P0 为零时只交报告、不推进状态。
+- `no-screenshots` (soft, occasion `act`) - 永久禁用视觉类工具
+- `beginner-mode` (soft, occasion `ask, answer`) - 讲清原语并沉淀术语表，也在人类说不清时帮他把话理顺
+- `human-only-commands` (soft, occasion `act`) - 说清人类专属命令的立场，因为人类在对话里提出要求时，模型的默认倾向是照办。
+- `plan-file` (soft, occasion `plan`) - 默认对话不落盘。
+- `grill-with-docs` (soft, occasion `plan`) - 质询必须对准项目已有的语言和已定决策
 <!-- OCF:REFERENCE:END -->
 
 Some behaviour that is not a rule and so is not in the list above:
@@ -98,12 +158,13 @@ Some behaviour that is not a rule and so is not in the list above:
   what it can do is notice the aftermath, so a silent hang becomes a record instead of a mystery.
 - A tool the policy does not classify is judged by what it carries: if it carries a command it is
   treated as an exec tool, so a tool added later cannot create an uninspected path. If it only carries
-  a path it is left to the name heuristic, so read-only tools are not dragged into the edit rules. An
+  a path it is left to the name heuristic, so read tools are not dragged into the write rules. An
   exec tool whose command cannot be read at all is denied rather than allowed blind.
 - Control-plane is recognised only when every statement invokes the control script by its full relative
   path, so merely mentioning the name does not inherit the exemption.
-- Which tools are always allowed, blocked, or read-only follows from their class in the list above.
-  A screenshot the human attaches is readable; the screenshot tool is not, in any state.
+- Which tools are never gated, which are gated, and which are refused unconditionally follows from
+  their class in the list above. A screenshot the human attaches is readable; the screenshot tool is
+  not, in any state.
 
 ## 5. Intake
 
@@ -248,7 +309,7 @@ The protected list is judged by a rule with no `when`, so it keeps applying with
 the one protection that cannot be turned off from inside the file it protects.
 
 An unreadable or malformed policy keeps the gate on by falling back to a policy that denies every change
-while still allowing reading and the always-allowed tools. That last part matters: a gate that refuses
+while still allowing reading and the session tools. That last part matters: a gate that refuses
 to let anyone read it is a gate nobody can repair, and a one-character typo once denied even `read_file`.
 A missing policy file also reports itself as a policy finding from `selftest`, never as silence.
 
@@ -295,7 +356,7 @@ while the level is still autopilot, because the triggering condition is an OR.
   discards pre-approval when the decision is `ask`. That branch is read from the editor bundle rather
   than verified end to end, so treat `ask` as a hint and put anything that must hold behind `deny`.
 - Reading is never gated, which is what keeps a broken gate diagnosable. The strict fallback refuses
-  every change and still allows reading and the always-allowed tools; the read-only list is what makes
+  every change and still allows the read and session tools; the read list is what makes
   that true, so removing an entry from it removes a recovery path.
 - Inline agent hooks would scope enforcement to one agent, but they need the chat.useCustomAgentHooks
   setting, and if it is off the gate silently stops working, so the workspace hook stays the default.

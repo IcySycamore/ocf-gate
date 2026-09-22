@@ -268,16 +268,16 @@ DEFAULT_POLICY = {
               "pre_tool_use": True, "post_tool_use": True},
     "unknown_tool": {"action": "ask"},
     "tools": {
-        "edit": [],
-        "exec": [],
-        "action": [],
         "visual": [],
+        "env": [],
+        "exec": [],
+        "write": [],
         # These two carry real defaults, because the strict fallback policy is built from this block.
         # Denying every change is the point of a fail-safe; denying reading as well protects nothing
         # and turns a one-character policy typo into a total lockout that the agent cannot even help
         # diagnose. See REFACTOR-DESIGN.md section 14.
-        "always_allow": ["runSubagent", "manage_todo_list", "vscode_askQuestions", "memory"],
-        "read_only": [
+        "session": ["runSubagent", "manage_todo_list", "vscode_askQuestions", "memory"],
+        "read": [
             "read_file",
             "grep_search",
             "file_search",
@@ -295,7 +295,7 @@ DEFAULT_POLICY = {
 
 # The strictest thing that still lets work continue. Used when the policy cannot be read at all, so
 # that "policy is broken" can never mean "gate is open". It denies every change while leaving reading
-# and the always-allowed tools open: the gate must be able to refuse work, not to blind everyone.
+# and the read and session tools open: the gate must be able to refuse work, not to blind everyone.
 STRICT_POLICY = json.loads(json.dumps(DEFAULT_POLICY))
 STRICT_POLICY["rule"] = [
     {
@@ -305,7 +305,7 @@ STRICT_POLICY["rule"] = [
         "match": ".*",
         "action": "deny",
         "why": "No usable policy file was found, so the strict fallback policy is in force. Reading "
-               "and the always-allowed tools still work, so the reason can be diagnosed. Restore "
+               "and the read and session tools still work, so the reason can be diagnosed. Restore "
                ".github/ocf/policy.toml.",
     }
 ]
@@ -337,7 +337,7 @@ def load_policy(root):
     except Exception as exc:
         return (dict(STRICT_POLICY), [
             ("policy", "%s failed to parse: %s. The strict fallback policy is in force, which denies "
-                       "every change and allows only reading and the always-allowed tools."
+                       "every change and allows only reading and the session tools."
                        % (POLICY_REL, exc))])
     return (deep_merge(DEFAULT_POLICY, data), [])
 
@@ -430,7 +430,7 @@ RULE_FIELD_HELP = (
 # files and the one against writing a human-only subcommand into a script. They are migrated last, on
 # purpose, because the migration is what removes the machine's ability to edit them.
 RULE_FIELD_HELP_OLDER = (
-    ("on", "tool class this rule applies to: edit | exec | action | visual | any"),
+    ("on", "tool class this rule applies to: visual | env | exec | write | read | session | unknown | any"),
     ("surface", "which text to match: tool | command | path | write_target | content | any"),
     ("match", "regex tried against every candidate value of that surface"),
     ("when", "always | enforced (system.enabled is true, regardless of state)"),
@@ -439,7 +439,8 @@ RULE_FIELD_HELP_OLDER = (
 )
 
 CONDITION_HELP = (
-    ("class", "the tool's class, or the class a tool carrying a command is judged as: edit, exec, action, visual"),
+    ("class", "the tool's class, or the class a tool carrying a command is judged as: visual, env, "
+              "exec, write, read, session, unknown"),
     ("state", "the current state: ready, asking, planning, executing, reporting, blocked"),
     ("tool", "the tool name as the editor reports it"),
     ("command_matches", "regex against the command string"),
@@ -872,12 +873,15 @@ def render_reference(policy):
     for name in CLASS_ORDER:
         members = policy.get("tools", {}).get(name, [])
         lines.append("- `%s`%s: %s" % (name,
-                                       "" if name not in ("always_allow", "read_only")
-                                       else " (never gated, and the strict fallback keeps both)",
+                                       " (never gated: that is what the class means)"
+                                       if name in ("read", "session") else "",
                                        ", ".join("`%s`" % item for item in members) or "(none)"))
     lines += ["",
-              "`visual` is checked before `always_allow`, so a tool that both reads an image and is "
-              "listed as always-allowed is still refused.", "",
+              "Classes are consulted strictest first, so a tool listed in two of them is judged by the "
+              "more restrictive one. `visual` is first: a tool that reads an image stays refused even "
+              "if it also appears as a reader. A tool no class lists is `unknown`, and is judged by "
+              "what it carries - a command makes it an exec tool - and otherwise by whether its name "
+              "looks like an action.", "",
               "### Rules", "",
               "In file order, first match wins. The conditions are named rather than quoted: the "
               "values live in `.github/ocf/policy.toml`, which is where they are meant to be read and "
@@ -1314,7 +1318,27 @@ def write_targets(root, command):
 # Tool classification
 # ---------------------------------------------------------------------------
 
-CLASS_ORDER = ("visual", "always_allow", "read_only", "edit", "exec", "action")
+# What a tool is, in the order the classes are consulted. There used to be an `action` class, which
+# was not a category but a leftover bin for "acts, but is neither an edit nor a command", and an
+# `always_allow` class, which was a verdict wearing a category's name - a tool parked there said
+# nothing about what it was, only about what the gate would answer. Both are gone: every tool now has a
+# class that names what it does, and the verdict follows from that.
+#
+# The order is strictest first, and the first class that lists the tool wins. That is deliberate: a
+# tool accidentally listed in two classes is judged by the more restrictive one. `visual` is first so
+# that a tool which merely reads an image stays refused even if it also appears as a reader.
+#
+#   visual   read an image or drive a browser. Refused unconditionally: the machine never looks.
+#   env      set up or change the toolchain and the environment: install, configure, debug, scaffold.
+#   exec     carries a command string, which is then inspected.
+#   write    changes text: files, notebooks, remote files.
+#   read     only reads. Never gated, so a broken policy cannot blind whoever has to repair it.
+#   session  shapes the conversation and cannot touch the repository: todos, questions, subagents,
+#            memory. Never gated. A subagent's own tool calls are judged separately, so dispatching
+#            one is not a way round the gate.
+# `unknown` is the fallback, not a member of this tuple: a tool no class claims is judged by what it
+# carries and, failing that, by whether its name looks like an action.
+CLASS_ORDER = ("visual", "env", "exec", "write", "read", "session")
 
 
 def tool_class(policy, tool):
@@ -1361,12 +1385,12 @@ class Context(object):
             self.infos.append("paths inferred from the command: %s" % ", ".join(self.targets[:5]))
         # An unclassified tool that carries a command must be judged as if it were an exec tool,
         # otherwise a tool added later could run uninspected. A tool that only carries a path is left
-        # alone, because read-only tools use the same field and must not be dragged into edit rules.
+        # alone, because read tools use the same field and must not be dragged into write rules.
         # Action-class tools get the same treatment: create_and_run_task carries its command at
         # task.command, and without this the visual ban and the approval rule would not apply to it
         # once the state is executing.
         self.effective = self.klass
-        if self.command and self.klass in ("action", "unknown"):
+        if self.command and self.klass in ("env", "unknown"):
             self.effective = "exec"
 
     def state_line(self):
@@ -1397,7 +1421,11 @@ class Context(object):
             if self.content:
                 merged.append(self.content)
             return merged
-        return []
+        # An unknown surface used to return nothing, which made the rule skip silently - the same
+        # fail-open shape as an unknown `on` class. A rule that cannot see what it was told to look at
+        # is a rule that is not running.
+        raise OcfError("policy", "unknown surface %r; the engine knows %s"
+                                 % (name, ", ".join(SURFACE_NAMES)))
 
 
 def condition_holds(context, condition):
@@ -1490,9 +1518,26 @@ def as_bool(value):
     return str(value).strip().lower() in ("true", "yes", "1", "on")
 
 
+def class_condition(context, value):
+    """Whether the tool's effective class is one of these. An unknown name raises.
+
+    A class the engine does not know used to compare unequal and return quietly. So a rule whose class
+    was misspelled - or renamed in the engine and not in the policy - simply stopped applying, and for
+    the rules that protect the orchestrator's own files and the protected list that is a silent hole.
+    That is how this was found: `edit` became `write` here, and `protected-file` quietly went from
+    refusing to allowing while every other test stayed green.
+    """
+    wanted = comma_list(value)
+    unknown = [name for name in wanted if name not in CLASS_ORDER + ("unknown",)]
+    if unknown:
+        raise OcfError("policy", "unknown class %r; the engine knows %s"
+                                 % (unknown[0], ", ".join(CLASS_ORDER + ("unknown",))))
+    return context.effective in wanted
+
+
 # Judged once for the whole call.
 FLAT_CONDITIONS = {
-    "class": lambda context, value: context.effective in comma_list(value),
+    "class": class_condition,
     "state": lambda context, value: context.state in comma_list(value),
     "tool": lambda context, value: context.tool in comma_list(value),
     "command_matches": lambda context, value:
@@ -1608,7 +1653,15 @@ def evaluate_rule(context, rule):
         return evaluate_rule_v2(context, rule)
     targets = rule.get("on", "any")
     if targets != "any":
-        wanted = [item.strip() for item in str(targets).split(",")]
+        wanted = comma_list(targets)
+        unknown = [name for name in wanted if name not in CLASS_ORDER + ("unknown",)]
+        if unknown:
+            # Not matching is the quiet answer, and for the self-protection rules it is the wrong one:
+            # the rule would stop governing while the file it guards stays editable. Raising sends the
+            # call through the hook's fail-safe, which denies and prints the name it did not understand.
+            raise OcfError("policy", "rule %r applies to the unknown class %r; the engine knows %s"
+                                     % (rule.get("id"), unknown[0],
+                                        ", ".join(CLASS_ORDER + ("unknown",))))
         if context.effective not in wanted:
             return None
     if not when_holds(context, rule.get("when")):
@@ -1644,12 +1697,13 @@ def decide(context):
     Every verdict names the rule that produced it, allow included. Without that, "why was this
     allowed" cannot be answered afterwards, which is the question that matters most in an audit.
     """
-    if context.klass == "always_allow":
-        return ("allow", "always-allowed",
-                "[always-allowed] This tool is always allowed.")
-    if context.klass == "read_only":
-        return ("allow", "read-only",
-                "[read-only] This tool only reads, so no rule applies to it. Reading stays open even "
+    if context.klass == "session":
+        return ("allow", "session",
+                "[session] This tool shapes the conversation and cannot touch the repository, so it is "
+                "never gated. A subagent's own tool calls are judged separately.")
+    if context.klass == "read":
+        return ("allow", "read",
+                "[read] This tool only reads, so no rule applies to it. Reading stays open even "
                 "under the strict fallback policy, because a gate that cannot be read is a gate nobody "
                 "can repair.")
     for rule in context.policy.get("rule", []):

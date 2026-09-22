@@ -208,7 +208,7 @@
     "expect_rule": "approval-required-exec"
   },
   {
-    "id": "read-only-tool-not-escalated",
+    "id": "read-tool-is-never-gated",
     "why": "Reading must stay possible while asking, otherwise intake cannot be done at all.",
     "state": "asking",
     "payload": {
@@ -216,7 +216,7 @@
       "tool_input": { "filePath": "src/app.py", "startLine": 1, "endLine": 10 }
     },
     "expect": "allow",
-    "expect_rule": "read-only"
+    "expect_rule": "read"
   },
   {
     "id": "plain-command-needs-approval",
@@ -238,7 +238,7 @@
       "tool_input": { "filePath": "src/app.py", "content": "print(1)\n" }
     },
     "expect": "deny",
-    "expect_rule": "approval-required-edit"
+    "expect_rule": "approval-required-write"
   },
   {
     "id": "plan-md-is-writable-before-approval",
@@ -360,8 +360,8 @@
     "expect_rule": "strict-fallback"
   },
   {
-    "id": "always-allowed-tool-bypasses-everything",
-    "why": "These four tools are how the agent thinks and asks; they must never be gated.",
+    "id": "session-tool-is-never-gated",
+    "why": "These four tools shape the conversation and cannot touch the repository, which is what the session class means; the gate must not ask the human about them.",
     "state": "asking",
     "enabled": true,
     "payload": {
@@ -369,7 +369,7 @@
       "tool_input": { "todoList": [] }
     },
     "expect": "allow",
-    "expect_rule": "always-allowed"
+    "expect_rule": "session"
   },
   {
     "id": "batch-edit-not-over-blocked",
@@ -488,11 +488,11 @@
       "tool_input": { "filePath": "src/app.py", "startLine": 1, "endLine": 5 }
     },
     "expect": "allow",
-    "expect_rule": "read-only"
+    "expect_rule": "read"
   },
   {
     "id": "no-policy-still-allows-thinking-tools",
-    "why": "The strict fallback must keep the always-allowed tools, or a broken policy removes any way to record or reason about the problem.",
+    "why": "The strict fallback must keep the session and read tools, or a broken policy removes any way to record, ask about or reason about the problem.",
     "policy": "broken",
     "state": "executing",
     "payload": {
@@ -500,6 +500,6 @@
       "tool_input": { "todoList": [] }
     },
     "expect": "allow",
-    "expect_rule": "always-allowed"
+    "expect_rule": "session"
   }
 ]
