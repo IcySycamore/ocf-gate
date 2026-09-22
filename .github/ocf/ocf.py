@@ -300,12 +300,11 @@ STRICT_POLICY = json.loads(json.dumps(DEFAULT_POLICY))
 STRICT_POLICY["rule"] = [
     {
         "id": "strict-fallback",
-        "on": "any",
-        "surface": "any",
-        "match": ".*",
-        "action": "deny",
+        "enabled": True,
+        "result": "deny",
+        "if": {"class": "any"},
         "why": "No usable policy file was found, so the strict fallback policy is in force. Reading "
-               "and the read and session tools still work, so the reason can be diagnosed. Restore "
+               "and the session tools still work, so the reason can be diagnosed. Restore "
                ".github/ocf/policy.toml.",
     }
 ]
@@ -1550,11 +1549,11 @@ def class_condition(context, value):
     refusing to allowing while every other test stayed green.
     """
     wanted = comma_list(value)
-    unknown = [name for name in wanted if name not in CLASS_ORDER + ("unknown",)]
+    unknown = [name for name in wanted if name not in CLASS_ORDER + ("unknown", "any")]
     if unknown:
         raise OcfError("policy", "unknown class %r; the engine knows %s"
-                                 % (unknown[0], ", ".join(CLASS_ORDER + ("unknown",))))
-    return context.effective in wanted
+                                 % (unknown[0], ", ".join(CLASS_ORDER + ("unknown", "any"))))
+    return "any" in wanted or context.effective in wanted
 
 
 # Judged once for the whole call.
@@ -1656,64 +1655,25 @@ def evaluate_rule_v2(context, rule):
 
 
 def evaluate_rule(context, rule):
-    """Return a verdict dict when the rule fires, else None.
+    """Return a verdict dict when the rule fires, else None. One shape, one evaluator.
 
-    Conditions split in two. Context-scoped ones (fact, computed, content_matches and friends) are true
-    or false for the call as a whole. Value-scoped ones (listed_in) must be judged
-    per candidate value, because a rule is asking "is THIS path the one I care about". Judging them as
-    a union of the whole batch makes one qualifying path decide the fate of every other path, which
-    both over-blocks and reports a target that is not the offender.
+    There used to be two: a flat `on`/`surface`/`match`/`when` chain and the condition table. The cost
+    was not the extra code, it was that one of them read `unless` and the other silently did not, so a
+    rule moved between the two shapes quietly lost its exception. The self-protection rules were the
+    last users of the older shape and are converted, so it is gone.
 
-    A rule in the newer shape ([rule.if] plus result/kind) is handed to evaluate_rule_v2. Both shapes
-    are accepted on purpose: the engine must understand at least as much vocabulary as the policy file
-    uses, because editing the two in sequence - code first, policy second - is exactly how the gate
-    locked itself out on itself once already.
+    A soft rule is not gated at all: it is guidance for the model, and it lives in the contract the
+    hook injects, so the gate has no verdict to give about it.
     """
-    # A soft rule is not gated here at all, in either shape. Checked before the shape dispatch so a
-    # soft rule can never be read as a verdict by the older path - one sentence of prose is not an
-    # `action`, and defaulting it would turn "explain your terms" into "deny".
     if str(rule.get("kind", "hard")).strip().lower() == "soft":
         return None
-    if "if" in rule or "result" in rule:
-        return evaluate_rule_v2(context, rule)
-    targets = rule.get("on", "any")
-    if targets != "any":
-        wanted = comma_list(targets)
-        unknown = [name for name in wanted if name not in CLASS_ORDER + ("unknown",)]
-        if unknown:
-            # Not matching is the quiet answer, and for the self-protection rules it is the wrong one:
-            # the rule would stop governing while the file it guards stays editable. Raising sends the
-            # call through the hook's fail-safe, which denies and prints the name it did not understand.
-            raise OcfError("policy", "rule %r applies to the unknown class %r; the engine knows %s"
-                                     % (rule.get("id"), unknown[0],
-                                        ", ".join(CLASS_ORDER + ("unknown",))))
-        if context.effective not in wanted:
-            return None
-    if not when_holds(context, rule.get("when")):
-        return None
-    values = context.surface(rule.get("surface", "any"))
-    if not values:
-        return None
-    pattern = rule.get("match")
-    hits = []
-    for value in values:
-        if pattern is None or pattern == ".*" or re.search(pattern, value, re.I):
-            hits.append(value)
-    if not hits:
-        return None
-    # only_if and unless are the same value-scoped test asked with opposite polarity, so they become
-    # one list of (condition, keep) and run through one evaluator. Two implementations of "is this
-    # candidate excused" is exactly how they drift apart.
-    conditions = []
-    for key, keep in (("only_if", True), ("unless", False)):
-        if rule.get(key):
-            conditions.append((rule[key], keep))
-    for condition, keep in conditions:
-        hits = filter_condition(context, condition, hits, keep)
-        if not hits:
-            return None
-    return {"id": rule.get("id", "unnamed"), "action": rule.get("action", "deny"),
-            "why": rule.get("why", ""), "hit": hits[0], "rule": rule}
+    if "if" not in rule:
+        # An absent condition table is not "no conditions, so it always holds". Reading it that way
+        # would turn a malformed rule into a rule that fires on everything, and a rule that fires on
+        # everything denies every tool call - a typo becomes a lockout.
+        raise OcfError("policy", "rule %r has no [rule.if], so the engine cannot tell when it applies"
+                                 % rule.get("id"))
+    return evaluate_rule_v2(context, rule)
 
 
 def decide(context):
