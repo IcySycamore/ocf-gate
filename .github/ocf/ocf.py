@@ -366,11 +366,7 @@ def enabled(policy):
 SECTION_KEYS = ("system", "paths", "limits", "approval", "hooks", "unknown_tool",
                 "tools", "selftest", "rule")
 # `is_set` and `is` sit beside `fact`, not inside it: condition_holds reads them as siblings.
-# The three command-limit conditions are gone: each rule states its own number, so a rule and the
-# limit it reads can no longer be separated into two files where only one of them is edited.
-CONDITION_KEYS = ("fact", "is_set", "is", "listed_in", "content_matches", "computed")
-WHEN_VALUES = ("always", "enforced")
-SURFACE_NAMES = ("tool", "command", "path", "write_target", "content", "any")
+CONDITION_KEYS = ("fact", "is_set", "is", "content_matches", "computed")
 ACTION_VALUES = ("allow", "deny", "ask", "require_approval")
 COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call", "enforced")
 
@@ -380,9 +376,7 @@ COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call", "enforced
 # moment in the conversation, not a tool call: the hard vocabulary (class, tool, command, path) has no
 # meaning when no tool is being called.
 SOFT_OCCASIONS = ("session-start", "ask", "plan", "act", "answer")
-RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if", "unless",
-             # The newer shape. Both are accepted while the policy is converted rule by rule.
-             "enabled", "kind", "label", "result", "if")
+RULE_KEYS = ("id", "enabled", "kind", "label", "if", "unless", "result", "why")
 
 
 # ---------------------------------------------------------------------------
@@ -399,10 +393,10 @@ RULE_KEYS = ("id", "on", "surface", "match", "when", "action", "why", "only_if",
 # exists fails.
 
 SECTION_HELP = (
-    ("system", "enabled: the maintenance switch. False stops the three `when = enforced` rules (the "
-               "orchestrator's self-protection and the self-authorization rule) and the three approval "
-               "rules, and nothing else - the protected list is judged by a rule with no `when`, so it "
-               "still applies"),
+    ("system", "enabled: the maintenance window. False stops the approval rules and the three rules "
+               "that name the `enforced` flag - which is the word that makes the orchestrator's own "
+               "files protected only while the window is closed. The protected list is judged by a "
+               "rule with no such condition, so it applies either way"),
     ("paths", "state_dir: where the runtime lives. Everything else is a fixed filename, not a setting"),
     ("limits", "fail_budget: consecutive failures before exec-class tools are locked"),
     ("approval", "allowed_states: the states acting is allowed in. min_reason_len: shortest approve reason"),
@@ -425,21 +419,9 @@ RULE_FIELD_HELP = (
     ("why", "shown to the agent in the verdict, so write what to fix, not what went wrong"),
 )
 
-# The older shape. Three rules are still written this way: the two that protect the orchestrator's own
-# files and the one against writing a human-only subcommand into a script. They are migrated last, on
-# purpose, because the migration is what removes the machine's ability to edit them.
-RULE_FIELD_HELP_OLDER = (
-    ("on", "tool class this rule applies to: visual | env | exec | write | read | session | unknown | any"),
-    ("surface", "which text to match: tool | command | path | write_target | content | any"),
-    ("match", "regex tried against every candidate value of that surface"),
-    ("when", "always | enforced (system.enabled is true, regardless of state)"),
-    ("action", "allow | ask | deny | require_approval"),
-    ("only_if", "an extra condition table that must hold"),
-)
-
 CONDITION_HELP = (
     ("class", "the tool's class, or the class a tool carrying a command is judged as: visual, env, "
-              "exec, write, read, session, unknown"),
+              "exec, write, read, session, unknown, or any for every tool"),
     ("state", "the current state: ready, asking, planning, executing, reporting, blocked"),
     ("tool", "the tool name as the editor reports it"),
     ("command_matches", "regex against the command string"),
@@ -455,8 +437,7 @@ CONDITION_HELP = (
     ("is", "with fact: the fact equals this value"),
     ("is_not", "with fact: the fact does not equal this value"),
     ("path_matches", "regex against each path the action touches. Judged per path, never as a batch"),
-    ("touches_protected", "each path the action touches is on the protected list, judged per path"),
-    ("listed_in", "older shape: each candidate value appears in that list file"),
+    ("touches_protected", "each path the action would change is on the protected list, judged per path"),
 )
 
 COMPUTED_HELP = (
@@ -467,11 +448,6 @@ COMPUTED_HELP = (
     ("enforced", "system.enabled is true: the maintenance window is closed. The three rules that "
                   "protect the orchestrator's own files are the only users, and removing this word "
                   "from them is what makes that protection unconditional"),
-)
-
-WHEN_HELP = (
-    ("always", "always"),
-    ("enforced", "system.enabled is true, regardless of the current state"),
 )
 
 ACTION_HELP = (
@@ -523,12 +499,8 @@ def render_vocabulary():
              "# [sections]"]
     lines += ["#   %-14s %s" % (name, help_text) for name, help_text in SECTION_HELP]
     lines += ["",
-              "# [rule] fields. Two shapes are accepted while the older one is converted away, and",
-              "# this region is generated - edit the rules, not this text."]
+              "# [rule] fields. This region is generated - edit the rules, not this text."]
     lines += ["#   %-14s %s" % (name, help_text) for name, help_text in RULE_FIELD_HELP]
-    lines += ["",
-              "#   the older shape, still used by the rules that protect the orchestrator itself:"]
-    lines += ["#   %-14s %s" % (name, help_text) for name, help_text in RULE_FIELD_HELP_OLDER]
     lines += ["",
               "# [rule.if] conditions. Each key is one condition; the value is what it compares against,",
               "# which is usually a regex or a number."]
@@ -537,10 +509,7 @@ def render_vocabulary():
               "# computed flags, named by the `computed` condition:"]
     lines += ["#   %-18s %s" % (name, help_text) for name, help_text in COMPUTED_HELP]
     lines += ["",
-              "# `when` (older shape) accepts:"]
-    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in WHEN_HELP]
-    lines += ["",
-              "# `result` and `action` accept:"]
+              "# `result` accepts:"]
     lines += ["#   %-18s %s" % (name, help_text) for name, help_text in ACTION_HELP]
     lines += ["",
               "# a soft rule's occasion, i.e. when its sentence is in force:"]
@@ -593,34 +562,28 @@ def policy_findings(policy):
             if name and name not in CLASS_ORDER + ("any", "unknown"):
                 problems.append("%s: unknown on class %r; the engine knows %s"
                                 % (where, name, ", ".join(CLASS_ORDER + ("any", "unknown"))))
-        surface = rule.get("surface", "any")
-        if surface not in SURFACE_NAMES:
-            problems.append("%s: unknown surface %r; the engine knows %s"
-                            % (where, surface, ", ".join(SURFACE_NAMES)))
-        when = rule.get("when")
-        if when is not None and when not in WHEN_VALUES:
-            problems.append("%s: unknown when %r; the engine knows %s"
-                            % (where, when, ", ".join(WHEN_VALUES)))
-        action = rule.get("action")
-        if action is not None and action not in ACTION_VALUES:
-            problems.append("%s: unknown action %r; the engine knows %s"
-                            % (where, action, ", ".join(ACTION_VALUES)))
-        for key in ("only_if", "unless"):
-            # A soft rule's unless is prose for the model, checked in its own branch below. Walking
-            # the string here read it one character at a time and called each character an unknown
-            # condition, which is how a well-formed rule came back as two pages of findings.
-            if kind == "soft":
-                continue
-            for name in sorted(rule.get(key) or {}):
-                if name == "computed" and rule[key][name] not in COMPUTED_FLAGS:
-                    problems.append("%s: %s names the computed flag %r; the engine computes %s"
-                                    % (where, key, rule[key][name], ", ".join(COMPUTED_FLAGS)))
-                elif name not in CONDITION_KEYS:
-                    problems.append("%s: %s holds the unknown condition key %r; the engine reads %s"
-                                    % (where, key, name, ", ".join(CONDITION_KEYS)))
+        # The one shape's conditions, checked the same way for `unless` as for `if`: an unknown name
+        # here is a condition nobody evaluates, which reads as a rule that is running and is not.
+        if kind == "hard":
+            for name, value in sorted((rule.get("unless") or {}).items()):
+                if name == "computed" and str(value) not in COMPUTED_FLAGS:
+                    problems.append("%s: rule.unless names the computed flag %r; the engine computes %s"
+                                    % (where, value, ", ".join(COMPUTED_FLAGS)))
+                    continue
+                if name in FLAT_CONDITIONS or name in FLAT_VALUE_CONDITIONS or name in FLAT_FACT_KEYS:
+                    continue
+                problems.append("%s: rule.unless holds the unknown condition %r; the engine reads %s"
+                                % (where, name, ", ".join(sorted(
+                                    set(FLAT_CONDITIONS) | set(FLAT_VALUE_CONDITIONS)
+                                    | set(FLAT_FACT_KEYS)))))
         result = rule.get("result")
         if kind not in ("hard", "soft"):
             problems.append("%s: unknown kind %r; the engine knows hard, soft" % (where, kind))
+        if kind == "hard" and "if" not in rule:
+            # evaluate_rule raises on this, because reading an absent table as "no conditions" would
+            # make the rule fire on everything. Reporting it here too says so before it fires.
+            problems.append("%s: a hard rule needs [rule.if]; without it the engine cannot tell when "
+                            "the rule applies" % where)
         if kind == "soft":
             # A soft rule's logic is prose, not a verdict, so the two are checked against different
             # vocabularies. Accepting a verdict here would let a deny rule be silently filed as a
@@ -646,6 +609,9 @@ def policy_findings(policy):
                                 "at a moment in the conversation, where no tool is being called"
                                 % (where, name))
             elif name in FLAT_CONDITIONS or name in FLAT_VALUE_CONDITIONS or name in FLAT_FACT_KEYS:
+                if name == "computed" and str(value) not in COMPUTED_FLAGS:
+                    problems.append("%s: rule.if names the computed flag %r; the engine computes %s"
+                                    % (where, value, ", ".join(COMPUTED_FLAGS)))
                 continue
             else:
                 problems.append("%s: rule.if holds the unknown condition %r" % (where, name))
