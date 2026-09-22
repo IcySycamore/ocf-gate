@@ -19,7 +19,9 @@ Your only output is one decision plus the reasoning, never a fix.
 Once a real run is the answer, the recipes for building that run belong to the diagnose skill, whose
 phase 1 lists them (failing test, HTTP script, CLI snapshot, headless browser, replayed trace,
 throwaway harness, fuzz loop, bisection, differential, human-in-the-loop). Do not keep a second menu
-here: this file decides which of the three methods to use and nothing else.
+here: this file decides which of the three methods to use and nothing else. One entry on that list is
+not available to the machine in this project - `headless browser`, and anything else that captures an
+image, is refused by the `visual-command` rule. That method exists for the human to run.
 
 The boundary between the two is privilege, not topic. diagnose runs commands and edits code, so inside
 this orchestrator it is only reachable once the human has approved and the state is executing. This

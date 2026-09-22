@@ -48,7 +48,9 @@
 - DELETE **number** files
 - MODIFY **number** files
 
-- Unit testing / Integration testing / E2E testing / Visual testing / no testing
+- Unit testing / Integration testing / E2E testing / no testing
+  (not visual testing: the `visual-tool` and `visual-command` rules refuse the machine every way of
+  capturing an image, so a step that needs one has to be the human's to run)
 - Build / CI / Deployment / no build
 
 ## Deliverables

@@ -25,14 +25,18 @@ Run status first, then do only what the current state allows.
 - asking: offer the human three sections (goal / requirements / deliverables), derive the eight plan
   sections from that plus context, record the facts, and grill only the gaps, one question per turn.
   Then advance planning or let the human run confirm.
-- planning: write plan.md with the 8 sections, dispatch plan-auditor for an independent P0 review,
-  and only then set p0_count from the audit. A P0 means revise and re-audit.
+- planning: give the plan in chat - that is the default, and a file is written only if the human asks
+  for one, because the approval is the human's and not the file's. Dispatch plan-auditor for an
+  independent P0 review, and only then set p0_count from the audit. A P0 means revise and re-audit.
 - executing: follow the approved plan exactly, carrying no extra changes. Then advance reporting.
 - reporting: report the change list and statistics. Then advance ready.
-- blocked: missing info, blocked by a gate, or you need to deviate. Stop and wait.
+- blocked: missing info, blocked by a gate, or you need to deviate. Stop and wait. The agent enters and
+  leaves this state by itself; no gate and no human are involved.
 
-Outside executing and reporting, any file edit and any command is blocked. Entering executing only
-happens when the human runs approve in their own terminal.
+Outside executing and reporting, file edits and commands are held up pending approval, with two
+exceptions: `.orchestrator/plan.md` is writable at any time so a plan can be given as a file, and a
+command that only reads the orchestrator's own state (`status`, `gate`, `journal`) is never held up.
+Entering executing only happens when the human runs approve in their own terminal.
 
 Every blocking condition and threshold is in sections 4 and 9 and is deliberately not restated here.
 When a gate blocks you, do what it says: supply the fact, split the command, stop silencing, go ask

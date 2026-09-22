@@ -5,7 +5,8 @@
 - 规则全文：[`.github/work-control-flow.md`](.github/work-control-flow.md)
 - 策略配置指南：[`POLICY-GUIDE.md`](POLICY-GUIDE.md)
 - 请求头：[`.github/copilot-instructions.md`](.github/copilot-instructions.md)
-- 重构设计与取舍记录：[`REFACTOR-DESIGN.md`](REFACTOR-DESIGN.md)
+- 策略怎么读怎么改：[`POLICY-GUIDE.md`](POLICY-GUIDE.md)
+  （曾经还有一份 `REFACTOR-DESIGN.md` 记重构取舍，已删 —— 它是历史提案，会一直把读者引向当时的配置形状；要看得去 git 历史里找）
 
 ## 解决什么问题
 
@@ -24,7 +25,7 @@ hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你�
 | **规则是数据**         | 门禁规则全在 [`policy.toml`](.github/ocf/policy.toml)，改规则不改代码，首个命中即生效                                                              |
 | **批准不靠说话**       | 进 `executing` 只能由人类在自己终端执行 `approve`；机器跑它会被拦（残余绕过面见「设计取舍」）                                                      |
 | **受保护清单**         | `.github/protected.txt` 里的路径机器改不了（工具与终端同一规则管）；它自己也在自己的条目里，且**进版本库** —— 不进版本库的清单在新克隆里等于不存在 |
-| **门禁不可自改**       | 规则文档、策略、hooks、agent、prompt、受保护清单与运行时状态全部受自保护；改一个文件忘了改保护清单会**测试失败**                                   |
+| **门禁不可自改**       | 规则文档、策略、hooks、agent、prompt、受保护清单与运行时状态全部受自保护；**把一个编排器文件搬走却忘了改自保护 pattern 会测试失败**，而不是静默开洞 |
 | **失效可被发现**       | 自检含金丝雀，走真实 hook 入口；门禁若静默停止拦截，自检与测试会失败而不是看起来健康                                                               |
 | **规则分软硬**         | 硬规则由 hook 给裁决；软规则无法被代码强制（没人能检查一句话写没写），由 `reload` 写进每次对话都读的常驻契约                                       |
 | **各项可单独停用**     | `[hooks]` 总开关决定整组装不装（关掉后 VS Code 根本不启动它，不是装作没听见），四个事件各有开关                                                    |
@@ -39,31 +40,36 @@ hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你�
 
 ```text
 .github/
-├── copilot-instructions.md          常驻契约（每个请求都加载，含入口点与状态机）
-├── work-control-flow.md             规则全文：状态机、门禁、受理契约、计划模板、终端纪律
+├── copilot-instructions.md          常驻契约（每个请求都加载；整份由 reload 生成）
+├── work-control-flow.md             规则全文：散文部分手写，参考区由 reload 生成
+├── protected.txt                    受保护清单（唯一的清单；进版本库，也把自己列在里面）
+├── assets/
+│   ├── plan-template.md             计划模板（八个标题；实际被读的只有 Steps 与 Files）
+│   └── report-template.md           交接报告模板
 ├── ocf/
-│   ├── ocf.py                       唯一实现：状态机 + 判定引擎 + CLI + 自检 + hook 入口
-│   ├── policy.toml                  唯一策略：规则、阈值、工具分类、自检金丝雀
+│   ├── ocf.py                       唯一实现：状态机 + 判定引擎 + CLI + 自检 + hook 入口 + 三个渲染器
+│   ├── policy.toml                  唯一策略：规则、阈值、工具分类、自检金丝雀；词表区由 reload 生成
 │   ├── requirements.txt             运行时依赖（仅 Python < 3.11 需 tomli，否则为空）
 │   └── tests/
 │       ├── cases.json               用例表（交给真实 hook 入口判定）
-│       └── run.py                   运行器 + 结构断言
+│       └── run.py                   运行器 + 18 条结构断言
 ├── hooks/
-│   └── orchestrator.json            四个事件的挂钩：SessionStart + UserPromptSubmit + PreToolUse + PostToolUse
+│   └── orchestrator.json            四个事件的挂钩；由 `[hooks]` 开关经 reload 生成
 ├── agents/
 │   ├── orchestrator.agent.md        主编排器人格（按状态驱动流程，子 agent 白名单已钉死）
-│   ├── plan-auditor.agent.md        只读计划审查员（独立找 P0）
+│   ├── plan-auditor.agent.md        只读计划审查员（独立找 P0，P0/P1/P2 的定义归它）
 │   └── criterion-picker.agent.md    复现手段裁决员（只出一决策，不给修复）
 └── prompts/
     ├── work-intake.prompt.md        /work-intake  受理任务
     ├── work-plan.prompt.md          /work-plan    出计划并送独立审查
     └── bug-route.prompt.md          /bug-route    定位错误
 
-.orchestrator/                       运行时（不打包、自动创建、勿手改）
-├── state                            当前状态
-├── facts                            人类提供的要素（key=value）
-├── plan.md                          行动清单（8 个字段，默认不落盘）
-├── glossary.md                      术语表（菜鸟模式软规则写入）
+.orchestrator/                       运行时（不打包、自动创建）
+├── state                            当前状态（hook 写）
+├── facts                            人类提供的要素（hook 写）
+├── plan.md                          行动清单，仅当人类要求写文件时才有（agent 写）
+├── glossary.md                      术语表（模型按菜鸟模式软规则写）
+├── prompt-log                       每条人类消息的原样记录（hook 写）
 ├── journal.log                      审计
 └── exec.log                         命令重复执行记录
 ```
@@ -109,8 +115,10 @@ python .github\ocf\ocf.py reload
 # 6) 重载 VS Code 窗口，让 hooks 生效
 ```
 
-出厂时 `policy.toml` 的 `system.enabled` 是 `false`（门禁关闭，方便先验证）。
-确认无误后由人类手工改成 `true`，再重载窗口。
+出厂时 `policy.toml` 的 `system.enabled` 是 `false`（维护窗口，方便先验证）。
+确认无误后由人类手工改成 `true`，再重载窗口。注意这个开关的作用域：它停的是
+**三条带 `when` 的规则（自保护×2 + 自授权×1）与三条批准规则**，其余规则不受影响；
+受保护清单也不受它管。
 
 ## 开始使用
 
@@ -159,20 +167,24 @@ python .github\ocf\ocf.py deny "docs/**"
 | **阈值**          | 直接改规则里那个数字（如 `command_length_over = 400`）；`[limits]` 只剩 `fail_budget`                         | 不用     |
 | **软规则**        | 改 `kind = "soft"` 的规则文字，然后跑 `reload`，常驻契约里那段话会跟着变                                      | 不用     |
 | **工具分类**      | 改 `[tools]` 各列表与 `[tools.field]` 的字段路径。新增工具**不必改代码**                                      | 不用     |
-| **停用某一项**    | 改 `[hooks]` 的总开关或事件开关，然后 `reload`；事件开关关掉后连程序都不再被启动                              | 要       |
-| **门禁开关**      | 改 `[system] enabled`。`false` = 维护窗口：只跳过自保护与自授权那几条规则，其余照旧；受保护清单**不再由它管** | 不用     |
+| **停用某项**      | 改 `[hooks]` 的总开关或事件开关，然后 `reload`；总开关关掉后那份接线里没有 hook，连程序都不再被启动             | 要       |
+| **门禁开关**      | 改 `[system] enabled`。`false` = 维护窗口：会停掉**三条 `when` 规则（自保护×2 + 自授权×1）与三条批准规则**，其余照旧；受保护清单**不受它管** | 不用     |
 | **自检金丝雀**    | 改 `[selftest.canary]`。金丝雀必须走真实 hook 入口，否则证明不了门禁还活着                                    | 不用     |
-| **状态机**        | 改 `ocf.py` 的 `STATES` / `transition_gate_names`，并同步 `work-control-flow.md` 第 3 节                      | 不用     |
-| **挂钩事件**      | 改 `.github/hooks/orchestrator.json`。命令串**只用 ASCII 且不含 `$`** —— 外层 shell 会插值                    | **要**   |
-| **文案/规则说明** | 改 `work-control-flow.md`、`copilot-instructions.md`、各 `*.prompt.md` / `*.agent.md`                         | 不用     |
+| **状态机**        | 改 `ocf.py` 的 `TRANSITIONS`（含 states / flow / bypass / gates），并让 `STATES` 与它一致                         | 不用     |
+| **挂钩事件**      | 改 `policy.toml` 的 `[hooks]`，然后 `reload`。**不要手改** `.github/hooks/orchestrator.json` —— 它由 `reload` 生成，手改会被断言判失败并被覆盖 | **要**   |
+| **生成的文案**    | `copilot-instructions.md`、`policy.toml` 的词表区、`work-control-flow.md` 的参考区都由 `reload` 生成，改配置后跑 `reload`       | 不用     |
+| **手写文案**      | 改 `work-control-flow.md` 的散文部分、`README.md`、各 `*.prompt.md` / `*.agent.md`                              | 不用     |
 
-改完跑 `python .github\ocf\tests\run.py`。它会替你检查四件容易漏的事：
-全 `.github` 纯 ASCII、markdown 相对链接可解析、agent 名字引用可解析、自保护 pattern 仍覆盖每个编排器文件。
+改完跑 `python .github\ocf\tests\run.py`。它跑 **38 条用例 + 18 条结构断言**，清单在 `run.py` 末尾的 `CHECKS` 里 ——
+不要在这里抄一份（这里曾经只列了四条，而且已经落后）。断言盯的是那些不失败就会静静撒谎的东西：
+markdown 相对链接、agent 名引用、模板与它自己的 schema、策略里写了引擎不读的键，以及每个生成区与代码渲染结果逐字节一致。
 
 ⚠️ **改 `.github/**`前先把`system.enabled`设为`false`**：这些文件受自保护，而且自保护挂在
 `enabled`上而不是「是否已批准」，所以`executing` 期间同样有效。人类手工编辑则无此限制。
 
-✅ **`.github/` 下刻意保持纯 ASCII**
+✅ **`.github/` 下保持 ASCII，但有三处具名豁免**
+`run.py` 的 `NON_ASCII_ALLOWED` 列了 `policy.toml`、`copilot-instructions.md`（都是写给人看和模型读的散文，用项目实际运行的语言）
+以及 `run.py` 自己（它要能对那段中文做断言）。`ocf.py` 刻意不在豁免里 —— 它的输出会进可能不是 UTF-8 的控制台。
 代价是 `/work-intake` 这类菜单项的描述也是英文；想改中文只改 `description` / `argument-hint` 两行。
 
 ## 修复

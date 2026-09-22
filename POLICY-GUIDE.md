@@ -2,14 +2,17 @@
 
 面向人类读者。讲清 **`.github/ocf/policy.toml` 怎么读、怎么改、改完怎么验**。
 
-**词的权威出处只有两处**，本文件不复制它们：
+**词的权威出处就是代码里的表**，本文件不复制它们：
 
-- [`policy.toml`](.github/ocf/policy.toml) 自己的头部注释 —— 字段与谓词词表。它就在规则旁边，
-  而且由 `policy_findings` 对着代码校验，写错了会被报出来。
-- [`.github/work-control-flow.md`](.github/work-control-flow.md) —— 行为：每条规则何时命中、
-  每个门禁要什么。
+- [`policy.toml`](.github/ocf/policy.toml) 里 `# OCF:VOCABULARY:BEGIN/END` 之间的区域 —— 字段与谓词词表。
+  它**是生成的**：由 `reload` 从 `ocf.py` 的 `SECTION_HELP` / `RULE_FIELD_HELP` / `CONDITION_HELP` 等表渲染。
+  测试还做**双向**比对 —— 引擎读的键没有说明会失败，说明了但引擎不读的键也会失败。
+  不要手改那个区域，改代码里的表。
+- [`.github/work-control-flow.md`](.github/work-control-flow.md) 里 `<!-- OCF:REFERENCE:BEGIN/END -->` 之间的区域 ——
+  门禁各自要什么、工具分类、以及每条规则何时命中、给出什么裁决。同样是生成的。
+- [`.github/copilot-instructions.md`](.github/copilot-instructions.md) —— 模型每轮读的常驻契约，整份由 `reload` 生成。
 
-本文件曾经复制过这两份词表（字段表、谓词表、段表、22 条规则表）。四张都过期了 —— 表格没人校验，
+本文件曾经复制过这些词表（字段表、谓词表、段表、22 条规则表）。四张都过期了 —— 表格没人校验，
 改代码时不会有人想起它。所以删掉，只留"怎么走、怎么改、怎么验"。
 
 ---
@@ -31,7 +34,7 @@
   → 短路①：always_allow  → allow
   → 短路②：read_only     → allow
   → 按顺序逐条 [[rule]]，首个命中即生效
-  → 短路③：exec 类但读不到命令 → deny（fail-safe）
+  → 短路③：exec 类、命令读不出来、且 `system.enabled` 为真 → deny（fail-safe）
   → 短路④：未分类且名字像动作、且在需批准的状态 → [unknown_tool].action
   → 都没有命中 → allow（[default]）
 ```
@@ -62,12 +65,14 @@
 | `result`  | 规则逻辑。硬规则是 `allow`/`ask`/`deny`/`require_approval`；软规则是要注入的那段话                                           |
 | `why`     | 规则描述：一句话，会直接展示给 agent，所以要写清"该怎么补前置条件"                                                           |
 
-**没有 `surface` 字段了**。一次动作本来就带好几段文字（工具名、命令、每个路径、要写入的内容），
+**新形状里没有 `surface` 字段**。一次动作本来就带好几段文字（工具名、命令、每个路径、要写入的内容），
 所以由条件自己指明它量的是哪一段：`command_*` 量命令，`path_*` 量路径。谓词分两类，这是最容易错的地方：
 
 - **上下文级**：对整次调用只有一个真假值。
 - **值级**（`path_matches` / `touches_protected`）：必须**逐个候选值**判断，而且只看真实路径。
   曾经写成"整批取并集"，于是批量编辑里一条合法路径会把其它路径一起拖下水，报错还指向无关文件。
+
+`surface` 仍然被旧形状接受，而现役策略里还有 3 条规则在用（两条自保护、一条自授权）——迁移完成前两者并存。
 
 加一条禁止，照这个形状写：
 
@@ -102,7 +107,7 @@ path_matches = '^config/prod/'
 
 ```powershell
 python .github\ocf\ocf.py selftest      # 分类输出：environment / policy / system / ok，非 ok 即退出码 1
-python .github\ocf\tests\run.py         # 38 条用例 + 14 条结构断言
+python .github\ocf\tests\run.py         # 38 条用例 + 18 条结构断言
 python .github\ocf\ocf.py gate all      # 逐条看状态门禁的通过情况
 python .github\ocf\ocf.py reload        # 人类专属：把配置重新生成进常驻契约与 hooks 接线
 ```

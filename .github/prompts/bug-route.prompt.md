@@ -20,8 +20,10 @@ shorthand for `python .github/ocf/ocf.py <cmd>`.
 After 2 consecutive failures of command execution or character parsing, record them with
 `ocf.py fail "<reason>"`, including the first one. Reaching the budget sets must_consult and locks
 every exec-class tool. Stop and tell the human the symptom with the exact error and command, what you
-already tried with the result of each, and what you need from them. Do not keep retrying, because a
-perfunctory reply does not clear the lock.
+already tried with the result of each, and what you need from them. Do not keep retrying. Note what the
+lock actually is: any message from the human clears it, and the gate cannot tell a considered reply
+from an injected one or a perfunctory one. So it stops you from looping; it is not evidence that the
+human has understood anything.
 
 Do not change code before a reproduction loop exists, do not rule out several blocks at once, and do
 not run visual or screenshot tests or work around that ban.
