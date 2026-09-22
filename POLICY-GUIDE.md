@@ -27,7 +27,7 @@
   → 都没有命中 → allow（[default]）
 ```
 
-**四种判定**：`allow` / `ask` / `deny` / `require_approval`
+**规则命中时的结果**：`allow` / `ask` / `deny` / `require_approval`
 
 ## 3. 规则
 
@@ -57,7 +57,7 @@ class        = "edit"
 path_matches = '^config/prod/'
 ```
 
-位置决定语义：要压过批准规则，放在 `approval-required-*` **之前**。要变硬，
+位置决定语义：要压过批准规则，放在 `approval-required-*` **之前**
 
 **加工具**：加进 `[tools]` 对应列表即可
 

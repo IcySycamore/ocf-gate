@@ -84,16 +84,19 @@ where a gate belonged, and claimed plan-schema wants eight sections when it read
 disagrees with your expectation, this section is right.
 
 <!-- OCF:REFERENCE:BEGIN -->
+
 ### Gates
 
 A gate is a precondition of a state change, not a rule about tool calls. Failing one refuses the transition and names what is missing.
 
 `asking -> planning`
+
 - `context` - the five intake items are present and each at least 4 characters
 - `docs-decision` - docs_decision is create or skip
 - `grill-valid` - grill_rounds is at least 1, consensus at least 10 characters, grill_used is with-docs or me
 
 `planning -> executing`
+
 - `plan-schema` - a plan file, if one exists, carries `## Steps` and `## Files`, both non-empty. An absent file passes: the plan is a conversation artefact by default
 - `zero-p0` - p0_count is 0
 - `protected-list-clear` - the plan's `## Files` section names no path on the protected list
@@ -103,14 +106,14 @@ A gate is a precondition of a state change, not a rule about tool calls. Failing
 
 The class decides which rules are consulted and how a tool is judged. Membership is here rather than in prose because prose drifts; a tool not listed is `unknown`.
 
-- `visual`: `screenshot_page`, `view_image`, `run_playwright_code`, `mcp_playwright_browser_take_screenshot`, `mcp_playwright_browser_run_code_unsafe`
-- `always_allow` (never gated, and the strict fallback keeps both): `runSubagent`, `manage_todo_list`, `vscode_askQuestions`, `memory`
-- `read_only` (never gated, and the strict fallback keeps both): `read_file`, `grep_search`, `file_search`, `list_dir`, `get_errors`, `copilot_getNotebookSummary`, `read_notebook_cell_output`, `vscode_listCodeUsages`
-- `edit`: `create_file`, `create_directory`, `replace_string_in_file`, `multi_replace_string_in_file`, `edit_notebook_file`, `vscode_renameSymbol`, `mcp_github_mcp_se_create_or_update_file`, `mcp_github_mcp_se_delete_file`, `mcp_github_mcp_se_push_files`, `mcp_github_mcp_se_fork_repository`
-- `exec`: `run_in_terminal`, `run_notebook_cell`, `mcp_playwright_browser_evaluate`
-- `action`: `create_and_run_task`, `install_python_packages`, `install_extension`, `debug_java_application`, `configure_python_environment`, `create_new_workspace`, `create_new_jupyter_notebook`
+- `visual`: `screenshot_page`, `view_image`, `run_playwright_code`, `mcp_playwright_browser_take_screenshot`, `mcp_playwright_browser_run_code_unsafe`, `mcp_playwright_browser_evaluate`
+- `env`: `install_python_packages`, `install_extension`, `configure_python_environment`, `debug_java_application`, `create_new_workspace`, `create_new_jupyter_notebook`
+- `exec`: `run_in_terminal`, `run_notebook_cell`, `create_and_run_task`
+- `write`: `create_file`, `create_directory`, `replace_string_in_file`, `multi_replace_string_in_file`, `edit_notebook_file`, `vscode_renameSymbol`, `mcp_github_mcp_se_create_or_update_file`, `mcp_github_mcp_se_delete_file`, `mcp_github_mcp_se_push_files`, `mcp_github_mcp_se_fork_repository`
+- `read` (never gated: that is what the class means): `read_file`, `grep_search`, `file_search`, `list_dir`, `get_errors`, `copilot_getNotebookSummary`, `read_notebook_cell_output`, `vscode_listCodeUsages`
+- `session` (never gated: that is what the class means): `runSubagent`, `manage_todo_list`, `vscode_askQuestions`, `memory`
 
-`visual` is checked before `always_allow`, so a tool that both reads an image and is listed as always-allowed is still refused.
+Classes are consulted strictest first, so a tool listed in two of them is judged by the more restrictive one. `visual` is first: a tool that reads an image stays refused even if it also appears as a reader. A tool no class lists is `unknown`, and is judged by what it carries - a command makes it an exec tool - and otherwise by whether its name looks like an action.
 
 ### Rules
 
@@ -133,9 +136,10 @@ In file order, first match wins. The conditions are named rather than quoted: th
 - `test-authorization` -> `deny` - Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes. [class, command_matches, fact, is_not]
 - `toolchain` -> `deny` - The human has not declared the existing environment. Do not install or probe on your own. [class, command_matches, fact, is_set]
 - `destructive` -> `deny` - Destructive command. Hand it to the human. [class, command_matches]
-- `approval-required-edit` -> `require_approval` - File edits need approval. The human runs the approve subcommand in their own terminal. [approval, class]
+- `env-undeclared` -> `deny` - The human has not declared the existing environment. Say what it is before the machine installs, configures or scaffolds anything; do not probe for it. [class, fact, is_set]
+- `approval-required-write` -> `require_approval` - File edits need approval. The human runs the approve subcommand in their own terminal. [approval, class]
 - `approval-required-exec` -> `require_approval` - Commands need approval. The human runs the approve subcommand in their own terminal. [approval, class, unless]
-- `approval-required-action` -> `require_approval` - This tool performs an action and needs approval. [approval, class]
+- `approval-required-env` -> `require_approval` - This tool changes the environment and needs approval. [approval, class]
 - `repeat` -> `ask` - The same command again, which suggests you are stuck in a loop. The human decides whether to continue. [class, command_repeats_at_least]
 - `intake-grilling` (soft, occasion `ask`) - 从人类回复和上下文推出规定的8项背景信息
 - `independent-audit` (soft, occasion `plan`) - 审计交给子代理，且 P0 为零时只交报告、不推进状态。

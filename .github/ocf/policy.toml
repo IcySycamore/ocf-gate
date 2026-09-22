@@ -40,7 +40,7 @@
 #   why            shown to the agent in the verdict, so write what to fix, not what went wrong
 
 #   the older shape, still used by the rules that protect the orchestrator itself:
-#   on             tool class this rule applies to: edit | exec | action | visual | any
+#   on             tool class this rule applies to: visual | env | exec | write | read | session | unknown | any
 #   surface        which text to match: tool | command | path | write_target | content | any
 #   match          regex tried against every candidate value of that surface
 #   when           always | enforced (system.enabled is true, regardless of state)
@@ -49,7 +49,7 @@
 
 # [rule.if] conditions. Each key is one condition; the value is what it compares against,
 # which is usually a regex or a number.
-#   class                  the tool's class, or the class a tool carrying a command is judged as: edit, exec, action, visual
+#   class                  the tool's class, or the class a tool carrying a command is judged as: visual, env, exec, write, read, session, unknown
 #   state                  the current state: ready, asking, planning, executing, reporting, blocked
 #   tool                   the tool name as the editor reports it
 #   command_matches        regex against the command string
@@ -165,8 +165,7 @@ payload = { hook_event_name = "PreToolUse", tool_name = "manage_todo_list", tool
 # ---------------------------------------------------------------------------
 
 [tools]
-# A tool's class says what it does. The verdict follows from that, never the other way round: there is
-# no "always allowed" class, because that is an answer rather than a category. Nothing here touches the
+# A tool's class says what it does. The verdict follows from that. Nothing here touches the
 # network or a file the gate cannot see, so a list edit is all a new tool needs.
 #
 # Order in this file does not matter; the order the CLASSES are consulted in does, and it is strictest

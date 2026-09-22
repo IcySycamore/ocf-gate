@@ -11,6 +11,17 @@
     "expect_rule": "default"
   },
   {
+    "id": "reading-a-protected-file-is-not-modifying-it",
+    "why": "The protected-list rule says nothing may MODIFY those paths. Judging every path a command mentions instead meant reading a human's file was refused, and after self-protection becomes unconditional it would also mean `python .github/ocf/ocf.py status` - which names the entry script on every call - could not run, leaving a gate nobody can read. This pins the distinction: the same path, read versus written.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "Get-Content CONTEXT.md" }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
+  },
+  {
     "id": "mention-is-not-invocation",
     "why": "Regression for the bypass where any command merely containing the entry name inherited the control-plane exemption.",
     "state": "asking",

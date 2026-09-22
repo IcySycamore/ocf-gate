@@ -1401,6 +1401,22 @@ class Context(object):
         return ("The human runs this in their own terminal:\n"
                 "  python .github/ocf/ocf.py approve \"<one-sentence reason>\"")
 
+    def changed_paths(self):
+        """The paths this action would change, as opposed to the ones it merely mentions.
+
+        An editing tool changes the file it was given. A command changes whatever its write target was
+        inferred to be - and only a write-ish command has one, so a command that does not write has
+        nothing to judge and no path rule applies to it. This distinction is load-bearing: the rule it
+        serves is "nothing may MODIFY these paths", and judging every path the text mentions instead
+        meant `python .github/ocf/ocf.py status` was refused for naming the entry script, which is the
+        one command that has to keep working. It was added in this order deliberately - the method
+        first, the call second - because the other order leaves the gate raising on every tool call,
+        which its own fail-safe turns into a denial of everything, including the fix.
+        """
+        if self.klass == "write":
+            return list(self.paths)
+        return list(self.targets)
+
     def surface(self, name):
         if name == "tool":
             return [self.tool] if self.tool else []
@@ -1562,12 +1578,15 @@ FLAT_VALUE_CONDITIONS = {
         as_bool(value) == listed_in(context.root, PROTECTED_LIST_REL, candidate),
 }
 
-# Value-scoped conditions judge the paths an action touches, never the whole text it carries. Reading
-# them off "any" would let a path that merely appears inside a command or in the content decide the
-# verdict - and for an allow rule that is a hole, not a nuisance.
+# Value-scoped conditions judge the paths an action would CHANGE, never the whole text it carries and
+# never every path it mentions. Two separate over-blocks came from getting this wrong: reading them off
+# "any" let a path that merely appeared in the content decide the verdict, which for an allow rule is a
+# hole rather than a nuisance; and reading them off every inferred path meant a command that MENTIONS a
+# protected file was refused, so `python .github/ocf/ocf.py status` - which names the entry script on
+# every call - would have stopped the gate being read at all. Reading a human's file is not changing it.
 VALUE_CANDIDATE_SOURCE = {
-    "path_matches": lambda context: list(context.paths) + list(context.targets),
-    "touches_protected": lambda context: list(context.paths) + list(context.targets),
+    "path_matches": lambda context: context.changed_paths(),
+    "touches_protected": lambda context: context.changed_paths(),
 }
 
 FLAT_FACT_KEYS = ("fact", "is", "is_not", "is_set")
