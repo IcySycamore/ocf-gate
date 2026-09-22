@@ -494,6 +494,22 @@ HOOK_HELP = (
     ("post_tool_use", "warn when a command produced no progress"),
 )
 
+# What each gate demands, next to the transition that runs it. This was prose in the rules document and
+# it drifted twice over: the gate list there named a rule (`protected-file`) instead of a gate, and
+# claimed plan-schema wants the eight plan sections when it reads two of them.
+GATE_HELP = {
+    "context": "the five intake items are present and each at least 4 characters",
+    "docs-decision": "docs_decision is create or skip",
+    "grill-valid": "grill_rounds is at least 1, consensus at least 10 characters, grill_used is "
+                   "with-docs or me",
+    "plan-schema": "a plan file, if one exists, carries `## Steps` and `## Files`, both non-empty. An "
+                   "absent file passes: the plan is a conversation artefact by default",
+    "zero-p0": "p0_count is 0",
+    "protected-list-clear": "the plan's `## Files` section names no path on the protected list",
+    "stack-env": "stack_env is declared, which means the human said what the environment is rather "
+                 "than the machine probing for it",
+}
+
 
 def render_vocabulary():
     """Render the policy file's interface as comments. Pure, so the file can be compared to it."""
@@ -670,6 +686,12 @@ INSTRUCTIONS_END = "<!-- OCF:END -->"
 VOCAB_BEGIN = "# OCF:VOCABULARY:BEGIN"
 VOCAB_END = "# OCF:VOCABULARY:END"
 
+# The rules document is hand-written prose with one generated region in the middle: the part of it that
+# is computable from the tables. Markdown markers, because that is what the file is.
+REFERENCE_REL = ".github/work-control-flow.md"
+REFERENCE_BEGIN = "<!-- OCF:REFERENCE:BEGIN -->"
+REFERENCE_END = "<!-- OCF:REFERENCE:END -->"
+
 
 def soft_rules(policy):
     return [rule for rule in policy.get("rule", [])
@@ -827,6 +849,61 @@ def render_hooks_json(policy):
     return json.dumps({"hooks": body}, indent=2) + "\n"
 
 
+def render_reference(policy):
+    """Render the derived half of the rules document: what the gate actually does.
+
+    Everything here is computable from the tables and the rules, so none of it should be hand-copied:
+    the hand-copied version of exactly this list had the gate named `protected-file` (a rule id) and
+    told the reader that plan-schema wants eight sections (it wants two). A reference that is rendered
+    cannot be wrong about the thing it is rendered from, and where it disagrees with a human's
+    expectation, the rendering is right and the expectation is the thing to fix.
+    """
+    lines = ["### Gates", "",
+             "A gate is a precondition of a state change, not a rule about tool calls. Failing one "
+             "refuses the transition and names what is missing.", ""]
+    for (source, target), names in sorted(TRANSITIONS["gates"].items()):
+        lines.append("`%s -> %s`" % (source, target))
+        for name in names:
+            lines.append("- `%s` - %s" % (name, GATE_HELP.get(name, "MISSING DESCRIPTION")))
+        lines.append("")
+    lines += ["### Tool classes", "",
+              "The class decides which rules are consulted and how a tool is judged. Membership is "
+              "here rather than in prose because prose drifts; a tool not listed is `unknown`.", ""]
+    for name in CLASS_ORDER:
+        members = policy.get("tools", {}).get(name, [])
+        lines.append("- `%s`%s: %s" % (name,
+                                       "" if name not in ("always_allow", "read_only")
+                                       else " (never gated, and the strict fallback keeps both)",
+                                       ", ".join("`%s`" % item for item in members) or "(none)"))
+    lines += ["",
+              "`visual` is checked before `always_allow`, so a tool that both reads an image and is "
+              "listed as always-allowed is still refused.", "",
+              "### Rules", "",
+              "In file order, first match wins. The conditions are named rather than quoted: the "
+              "values live in `.github/ocf/policy.toml`, which is where they are meant to be read and "
+              "changed.", ""]
+    for rule in policy.get("rule", []):
+        identity = rule.get("id", "unnamed")
+        kind = str(rule.get("kind", "hard")).strip().lower()
+        outcome = rule.get("result") if kind == "soft" else (rule.get("result") or rule.get("action"))
+        if kind == "soft":
+            lines.append("- `%s` (soft, occasion `%s`) - %s"
+                         % (identity,
+                            ", ".join(comma_list((rule.get("if") or {}).get("occasion", ""))) or "none",
+                            one_line(rule.get("why", ""))))
+            continue
+        conditions = sorted(set(rule.get("if") or {}) | set(rule.get("only_if") or {})
+                            | ({"when=" + str(rule["when"])} if rule.get("when") else set())
+                            | ({"unless"} if rule.get("unless") else set()))
+        lines.append("- `%s`%s -> `%s` - %s%s"
+                     % (identity,
+                        "" if as_bool(rule.get("enabled", True)) else " (switched off)",
+                        outcome,
+                        one_line(rule.get("why", "")),
+                        " [%s]" % ", ".join(conditions) if conditions else ""))
+    return "\n".join(lines)
+
+
 def sync_generated(root, relative, rendered, markers=None):
     """Make a generated file match what the renderer produced, and report what happened.
 
@@ -893,6 +970,11 @@ def write_instructions(root, policy):
 def write_vocabulary(root, policy):
     return sync_generated(root, POLICY_REL, render_vocabulary(),
                           markers=(VOCAB_BEGIN, VOCAB_END))
+
+
+def write_reference(root, policy):
+    return sync_generated(root, REFERENCE_REL, render_reference(policy),
+                          markers=(REFERENCE_BEGIN, REFERENCE_END))
 
 
 # ---------------------------------------------------------------------------
@@ -2294,6 +2376,7 @@ def cmd_reload(root, policy, args):
         return 1
     out(write_instructions(root, policy))
     out(write_vocabulary(root, policy))
+    out(write_reference(root, policy))
     out(write_hooks(root, policy))
     rules = soft_rules(policy)
     on = [rule for rule in rules if as_bool(rule.get("enabled", True))]

@@ -862,12 +862,40 @@ def check_vocabulary_region():
                            "the vocabulary region is what documents the policy's interface")
 
 
+def check_reference_region():
+    """The generated half of the rules document must exist and cover every gate.
+
+    A separate function from the vocabulary check on purpose: both end in a call that raises when the
+    file needs reloading, and an assertion placed after one of those never runs at all. A check that
+    silently does not execute is the defect this whole exercise is about, and it would have been left
+    here by an earlier version of this very change.
+    """
+    ocf = load_ocf_module()
+    policy, _ = ocf.load_policy(REPO)
+    gate_names = {name for names in ocf.TRANSITIONS["gates"].values() for name in names}
+    assert gate_names == set(ocf.GATE_HELP), (
+        "the gate descriptions and the transitions disagree: gates with no description %s; "
+        "descriptions of gates that are not run %s. A reference that does not cover every gate is the "
+        "prose version again." % (sorted(gate_names - set(ocf.GATE_HELP)),
+                                  sorted(set(ocf.GATE_HELP) - gate_names)))
+    rendered = ocf.render_reference(policy)
+    assert "MISSING DESCRIPTION" not in rendered, (
+        "the reference renders a gate with no description, so it would publish a placeholder")
+    check_generated_region(ocf, policy, ocf.REFERENCE_REL, rendered,
+                           (ocf.REFERENCE_BEGIN, ocf.REFERENCE_END), ocf.write_reference,
+                           "the reference region is what makes the rules document true")
+
+
 def test_generated_instructions():
     check_generated_instructions()
 
 
 def test_vocabulary_region():
     check_vocabulary_region()
+
+
+def test_reference_region():
+    check_reference_region()
 
 
 def check_hooks_wiring():
@@ -1032,6 +1060,7 @@ CHECKS = (
     ("no-invented-spaces", test_no_invented_spaces),
     ("generated-instructions", test_generated_instructions),
     ("vocabulary-region", test_vocabulary_region),
+    ("reference-region", test_reference_region),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),
