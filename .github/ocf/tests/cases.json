@@ -277,16 +277,16 @@
     "expect_rule": "self-protection-path"
   },
   {
-    "id": "switch-off-opens-gate-code",
-    "why": "system.enabled=false is the only way to hand control back, and it must actually open the gate.",
+    "id": "switch-off-does-not-open-gate-code",
+    "why": "The maintenance window stops the approval rules, and that is all it stops. It used to open the orchestrator's own files too, which meant the switch that turns the gate down was also the key to rewriting it: turning it off disabled the rules that protect it. Self-protection is unconditional now, and this case is what says so.",
     "enabled": false,
     "state": "executing",
     "payload": {
       "tool_name": "create_file",
       "tool_input": { "filePath": ".github/ocf/ocf.py", "content": "# edit\n" }
     },
-    "expect": "allow",
-    "expect_rule": "default"
+    "expect": "deny",
+    "expect_rule": "self-protection-path"
   },
   {
     "id": "protected-path-blocked",

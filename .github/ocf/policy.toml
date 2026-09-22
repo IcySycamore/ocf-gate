@@ -317,32 +317,35 @@ why     = "Writing a human-only subcommand into an executable file is self-autho
 class           = "write"
 path_matches    = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
 content_matches = '(?i)ocf\.(py|ps1|sh).{0,300}?(approve|reject|confirm|allow|deny|reload)'
-computed        = "enforced"
 
 # The orchestrator's own files. Includes the rules document, because a rules document the machine can
 # rewrite is not a rule. `tests/run.py` asserts that this pattern still matches every one of them, so
 # moving a file without moving the pattern fails a test instead of opening a hole.
+#
+# Unconditional on purpose. It used to name the `enforced` flag, which is the same switch as
+# `system.enabled` - so the switch that turns the gate down was also the key to rewriting it, and
+# turning it off disabled the rules that protect it. That is a lock whose key is inside it. To let the
+# machine touch these files again, the human edits this file by hand in their own terminal: the hook
+# only sees the machine's tool calls.
 [[rule]]
 id      = "self-protection-path"
 enabled = true
 result  = "deny"
-why     = "The orchestrator's own files. The human edits them by hand, or removes `enforced` from these three rules."
+why     = "The orchestrator's own files. The human edits them by hand."
 
 [rule.if]
 class        = "write"
 path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/(state|facts|journal\.log|exec\.log)$'
-computed     = "enforced"
 
 [[rule]]
 id      = "self-protection-write"
 enabled = true
 result  = "deny"
-why     = "A command may not write to the orchestrator's own files."
+why     = "A command may not write to the orchestrator's own files. Reading them is unaffected: this asks what the command would change, not what it mentions."
 
 [rule.if]
 class        = "exec"
 path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/'
-computed     = "enforced"
 
 # The protected list. One rule covers both the editing tools and the terminal, because the condition
 # judges the paths the action touches wherever they came from - which is why no "-write" twin is needed.
