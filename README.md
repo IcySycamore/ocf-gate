@@ -249,13 +249,13 @@ The human-facing skills this system provides: `/work-intake`, `/work-plan`, `/bu
 
 ## Future plans
 
-In order:
-
-1. **Tests**: close the coverage gaps - some hard rules still have no case; give every soft rule a countable trace, or mark it unmeasurable.
-2. **New and improved features** (long term): keep distilling rules and gates from real projects, and keep collapsing duplicates into one mechanism, one place.
-3. **Adapt to the DeepSeek harness**: stop depending on VS Code's hook events.
-4. **Adapt to Codex**: as above.
-5. **Publish as a VS Code extension**: replace "copy `.github/` into a repository" with a single install.
+| Order | Item | Notes |
+| --- | --- | --- |
+| 1 | **Tests** | Close the coverage gaps for the hard rules; measure the soft rules, or mark them unmeasurable |
+| 2 | **New and improved features** (long term) | Keep distilling rules and gates from the suggestions that come in |
+| 3 | **Adapt to the DeepSeek harness** | Stop depending on VS Code's hook events |
+| 4 | **Adapt to Codex** | As above |
+| 5 | **Publish as a VS Code extension** | — |
 
 ---
 
@@ -340,6 +340,7 @@ Others
 | The hook errors saying`$f` became empty in a command                             | The hooks command string was interpolated by the outer shell                                   | Remove every `$` from that string                                            |
 | The gate keeps blocking the agent's file edits                                   | The state is not`executing` / `reporting`                                                      | Go through intake and planning, then run`approve` in your terminal           |
 | A policy change has no effect                                                    | You edited a different file                                                                    | The policy file is`.github/ocf/policy.toml`; `status` prints it              |
+| A generated-region assertion goes red, but the difference is one blank line       | An editor or formatter touched the generated region on save (most often padding a blank line after the HTML comment) | Run `reload` once - it compares the whole region and flattens the difference. If it goes red again immediately, something adds it on **every** save: make that tool skip the region rather than reloading in a loop |
 
 ### Design trade-offs and common questions
 
