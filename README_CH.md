@@ -353,14 +353,14 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 .\release\build\build.ps1
 ```
 
-**先检查，再打包**：交付套件里的用例表与结构断言，以及引擎自检。
+**先检查，再打包**：记得运行交付套件里的用例表与结构断言，以及引擎自检。
 
 ### 更新
 
 **跑新版 exe，选同一个仓库。**
 
 安装前将检查发布物哈希清单核对载荷。如果你进行了二次开发，请注意先保存你的工作：
-`policy.toml`、`protected.txt`、`.orchestrator/` 与各 `facts` 键原样迁移，不一致时新版写成同名 `.dist` 供比对。
+安装器将对`policy.toml`、`protected.txt`、`.orchestrator/` 与各 `facts` 键原样迁移，不一致时新版被写成同名 `.dist` 供比对。
 
 ### 卸载
 
@@ -422,9 +422,8 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 
 其余限制见 `.github/work-control-flow.md` 的 _Known limitations_ 一节。
 
-> [!INFO] Info
+> [!INFO]
 > 以及……
->
 > 一定一定要对 agent 有耐心，不要因为 agent 的"愚蠢"就发火而降低了自己的 prompt 质量。
 > 当您的 agent 正在工作时，请时刻关注其工作内容和进展——以便及时刹车或纠正。
 > 毕竟 AI agent 只是一个工具 Orz
@@ -455,3 +454,9 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 ---
 
 <div align="center">
+**⭐ 如果这个项目对你有帮助，欢迎 Star 支持 ⭐**
+
+<sub>Made with ❤️ for better human–agent collaboration</sub>
+
+</div>
+
