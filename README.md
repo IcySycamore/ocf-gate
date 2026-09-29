@@ -30,7 +30,7 @@
 - [Getting started](#getting-started)
 - [Experimental](#experimental)
 - [Future plans](#future-plans)
-- [Appendix](#-appendix)
+- [Appendix](#appendix)
 
 ---
 
