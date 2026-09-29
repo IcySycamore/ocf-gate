@@ -1,244 +1,277 @@
 # Work Control Flow
 
-把「人类批准后才动手」从口头约定变成**不可绕过的代码门禁**。给 VS Code Copilot Chat 用。
+English | [中文](README_CH.md)
 
-- 规则全文：[`.github/work-control-flow.md`](.github/work-control-flow.md)
-- 策略配置指南：[`POLICY-GUIDE.md`](POLICY-GUIDE.md)
-- 请求头：[`.github/copilot-instructions.md`](.github/copilot-instructions.md)
-- 策略怎么读怎么改：[`POLICY-GUIDE.md`](POLICY-GUIDE.md)
-  （曾经还有一份 `REFACTOR-DESIGN.md` 记重构取舍，已删 —— 它是历史提案，会一直把读者引向当时的配置形状；要看得去 git 历史里找）
+---
 
-## 解决什么问题
+## Project introduction
 
-AI agent 最常见的事故不是「不会写」，而是**没被要求就动手**：没问清需求就开工、没等批准就改文件、
-静默跑一堆命令、出错后无限重试、改掉人类的代码。
+The goals of this project are,
 
-这套东西把这些问题做成**代码判定**：状态机决定「现在能做什么」，门禁判定「这一下放不放行」，
-hooks 在工具执行前强制检查。不通过就拦下，并明确告诉你缺哪个前置条件。
+1. as agent-assisted development increasingly becomes part of a computer-industry practitioner's work, to explore the human & agent collaboration workflow and the agent's **permission boundary**;
+2. to provide a system. Through a whole built from well-designed prompts, a state machine and so on, it effectively raises the human-agent collaboration experience, distils the human collaboration steps that are necessary, balances working efficiency, quality and accuracy, and solves the problems that come from the agent and the human disagreeing: the agent overstepping, behaving unpredictably, answering badly.
 
-## 优势与特性
+The glossary is in the appendix.
 
-| 特性                   | 说明                                                                                                                                                |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **硬门禁，不是提示词** | 门禁是进程 + hooks，拦不拦得住不取决于 agent 是否听话                                                                                               |
-| **一份实现**           | 只有 `.github/ocf/ocf.py`（Python 3，标准库），跨平台语义唯一，不存在两份实现分叉                                                                   |
-| **规则是数据**         | 门禁规则全在 [`policy.toml`](.github/ocf/policy.toml)，改规则不改代码，首个命中即生效                                                               |
-| **批准不靠说话**       | 进 `executing` 只能由人类在自己终端执行 `approve`；机器跑它会被拦（残余绕过面见「设计取舍」）                                                       |
-| **受保护清单**         | `.github/protected.txt` 里的路径机器改不了（工具与终端同一规则管）；它自己也在自己的条目里，且**进版本库** —— 不进版本库的清单在新克隆里等于不存在  |
-| **门禁不可自改**       | 规则文档、策略、hooks、agent、prompt、受保护清单与运行时状态全部受自保护；**把一个编排器文件搬走却忘了改自保护 pattern 会测试失败**，而不是静默开洞 |
-| **失效可被发现**       | 自检含金丝雀，走真实 hook 入口；门禁若静默停止拦截，自检与测试会失败而不是看起来健康                                                                |
-| **规则分软硬**         | 硬规则由 hook 给裁决；软规则无法被代码强制（没人能检查一句话写没写），由 `reload` 写进每次对话都读的常驻契约                                        |
-| **各项可单独停用**     | `[hooks]` 总开关决定整组装不装（关掉后 VS Code 根本不启动它，不是装作没听见），四个事件各有开关                                                     |
-| **终端可视化**         | 拦长命令、多语句串联、静默输出、交互阻塞；同一命令反复执行转人工确认                                                                                |
-| **失败预算**           | 连续失败 2 次锁死执行类工具，强制 agent 停下问人类；人类回话即解锁                                                                                  |
-| **永久禁视觉测试**     | 截图/看图工具无条件拦；需要看画面时由人类截图并在下一条消息附上                                                                                     |
-| **全程可审计**         | 状态流转、授权、失败都写进 `.orchestrator/journal.log`；每条判定都带规则 id                                                                         |
-| **离线可测**           | 一张用例表走真实 hook 入口的子进程，不依赖 VS Code                                                                                                  |
-| **单一可打包单元**     | 整个 `.github/` 复制进任意仓库即可，纯文本、无构建产物                                                                                              |
+### Have you hit these problems?
 
-## 组成
+The most common accident with an AI agent is not that it cannot do the work, but that it does not understand what the human meant.
 
-```text
-.github/
-├── copilot-instructions.md          常驻契约（每个请求都加载；整份由 reload 生成）
-├── work-control-flow.md             规则全文：散文部分手写，参考区由 reload 生成
-├── protected.txt                    受保护清单（唯一的清单；进版本库，也把自己列在里面）
-├── assets/
-│   ├── plan-template.md             计划模板（八个标题；实际被读的只有 Steps 与 Files）
-│   └── report-template.md           交接报告模板
-├── ocf/
-│   ├── ocf.py                       唯一实现：状态机 + 判定引擎 + CLI + 自检 + hook 入口 + 三个渲染器
-│   ├── policy.toml                  唯一策略：规则、阈值、工具分类、自检金丝雀；词表区由 reload 生成
-│   ├── requirements.txt             运行时依赖（仅 Python < 3.11 需 tomli，否则为空）
-│   └── tests/
-│       ├── cases.json               用例表（交给真实 hook 入口判定）
-│       └── run.py                   运行器 + 18 条结构断言
-├── hooks/
-│   └── orchestrator.json            四个事件的挂钩；由 `[hooks]` 开关经 reload 生成
-├── agents/
-│   ├── orchestrator.agent.md        主编排器人格（按状态驱动流程，子 agent 白名单已钉死）
-│   ├── plan-auditor.agent.md        只读计划审查员（独立找 P0，P0/P1/P2 的定义归它）
-│   └── criterion-picker.agent.md    复现手段裁决员（只出一决策，不给修复）
-└── prompts/
-    ├── work-intake.prompt.md        /work-intake  受理任务
-    ├── work-plan.prompt.md          /work-plan    出计划并送独立审查
-    └── bug-route.prompt.md          /bug-route    定位错误
+- Starts work before the requirement is clear, and what it delivers does not match what was expected
+- Edits files, sets up environments, creates directories, runs commands silently or retries forever, causes huge unrecoverable damage after an error, or overwrites comments and code the human wrote by hand - doing work outside the boundary it was given
+- Answers are poor: full of syntax, logic, factual and comprehension errors; hallucination, not answering the question, repetition, meaninglessness, over-explaining (raising the cost of understanding, slowing the reader down) or too shallow (burning too many tokens)
+- Output in the wrong format, the wrong language or the wrong style; work with no order, no plan, no report
 
-.orchestrator/                       运行时（不打包、自动创建）
-├── state                            当前状态（hook 写）
-├── facts                            人类提供的要素（hook 写）
-├── plan.md                          行动清单，仅当人类要求写文件时才有（agent 写）
-├── glossary.md                      术语表（模型按菜鸟模式软规则写）
-├── prompt-log                       每条人类消息的原样记录（hook 写）
-├── journal.log                      审计
-└── exec.log                         命令重复执行记录
-```
+### Advantages
 
-受保护清单不在运行时目录：它在 `.github/protected.txt`，因为它必须进版本库。
+| Feature                                                             | What it gives you                                                                                                                                                |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A hard gate plus soft guidance**                                  | Hooks are designed to build the workflow and constrain the model's behaviour, and light guidance words focus the model's attention on what matters               |
+| **A light core**                                                    | A single .py file at the core, standard library only, cross-platform                                                                                             |
+| **Approval does not rest on understanding, and cannot be bypassed** | Only a human running the`approve` command in their own terminal can approve                                                                                      |
+| **The protected list**                                              | A protected directory limits the model's access to files, and self-protects the system                                                                           |
+| **A rules and configuration system**                                | 23 hard rules and 8 soft rules distilled from real project experience, managed conveniently as key-value toml, able to switch the whole system on or off at once |
+| **The terminal stays in the human's hands**                         | It blocks execution before approval, long commands, multi-statement chains, silenced output, interactive blocking, repeated execution and consecutive failures   |
+| **Auditable end to end**                                            | State transitions, authorizations and failures are all visible in`.orchestrator/journal.log`                                                                     |
+| **Classic tests built in**                                          | Self-checks at deployment, at the start of a conversation and on every rule reload, so the system never fails silently                                           |
+| **Easy to deploy, package and migrate**                             | Convenient to deploy; one command migrates the system and its state                                                                                              |
 
-注意：**没有** `.orchestrator/config`。开关与阈值都并入 `policy.toml` 了 —— 留一个「看起来像开关」的
-死文件本身就是陷阱。
+Other features are for you to find!
 
-## 依赖与运行前提
+### Composition
 
-- **运行时零第三方依赖。** 入口只用标准库，TOML 用 `tomllib`（3.11+）或 `tomli` 兜底。
-  这是硬约束：hooks 由 VS Code 在**宿主**上启动，无法用容器包裹，一旦入口缺依赖，
-  门禁会**静默 fail-open** —— 正是这套系统要消灭的故障。
-- **Docker 不参与运行时，只在测试时有用。** 把门禁跑进容器不可能（VS Code 在**宿主**上启动它），
-  而跑测试也只要 CPython。它真正证明过的价值是：**把同一套用例放到 Linux 与其它 Python 版本上跑** ——
-  路径/分隔符逻辑的另一半、以及 <3.11 的 tomli 分支，只有在那里才走得到。
-  实测价值：它当场抛出 "no tests ran"，因为 Dockerfile 自己用 `python -m pytest` 而 pytest 默认
-  只收集 `test_*.py`，我们的运行器叫 `run.py`。宿主上直接跑 `run.py` 永远发现不了这个。
-- Windows 上解释器名是 `python`；其它平台是 `python3`（见 `orchestrator.json` 的平台覆盖）。
+| Part                   | Where                             | What it does                                                                                                                                                                                                                                      |
+| ---------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **State machine**      | `TRANSITIONS` in `ocf.py`         | `ready → asking → planning → executing → reporting → ready`, by pass: `blocked`                                                                                                                                                                   |
+| **Command units**      | the command table in`ocf.py`      | The agent may use`status` / `set` / `gate` / `journal` / `fail` / `ok` / `advance` / `init` / `selftest` / `verify`; the human may use `approve` / `reject` / `protect` / `unprotect` / `reload` / `install` / `package`                          |
+| **Persistence**        | `.orchestrator/`                  | `state` the machine state, `facts` the distilled working elements, `glossary.md` the terms, `journal.log` the audit, `exec.log` the command-repeat record, `prompt-log` the intake record, `plan.md` the plan as a file, only when the human asks |
+| **Configurable rules** | `.github/ocf/policy.toml`         | 23 hard rules + 8 soft rules                                                                                                                                                                                                                      |
+| **VS Code hook**       | `.github/hooks/orchestrator.json` | Four events at`ocf.py hook`: SessionStart / UserPromptSubmit / PreToolUse / PostToolUse                                                                                                                                                           |
 
-| 条件               | 说明                                                                                                                                                                                                                                                                                                                                         |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **编辑器不得代答** | VS Code 在 agent 提问时，若聊天权限档为 **Autopilot (Preview)**（即 `chat.permissions.autopilot`）或设置 `chat.autoReply` 为 true，**会自己注入一条答复**。门禁**分不出**它与人类消息 —— 两者都走 `UserPromptSubmit`。所以这是部署前提：档位留在 **Default permissions**（或 **Allow all**），并在**用户设置**里加 `"chat.autoReply": false` |
-| 必须重载窗口       | 新增/修改 `.github/hooks/*.json` **不会热加载**。用 `Developer: Show Agent Debug Logs` 确认                                                                                                                                                                                                                                                  |
-| hooks 未被策略禁用 | 组织策略可能禁用 hooks                                                                                                                                                                                                                                                                                                                       |
-| 工作目录           | hooks 的 cwd = 工作区根，所以配置里用仓库根相对路径                                                                                                                                                                                                                                                                                          |
-| `policy.toml` 可读 | 读不到或解析失败时**不降级为「无策略」**，而是落到「除永远允许的工具外一律拒绝」的最严兜底，并由自检报 `[policy]`                                                                                                                                                                                                                            |
+---
 
-## 部署
+## Environment dependencies
+
+| Item                 | Requirement                                                                                                            |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| **Runtime**          | Python 3,`tomllib` or `tomli`, no build.                                                                               |
+| **Host**             | VS Code GitHub Copilot Chat                                                                                            |
+| **hooks**            | An organization policy may disable hooks                                                                               |
+| **Interpreter name** | `python` on Windows, `python3` elsewhere                                                                               |
+| **Window reload**    | `json` is not hot-reloaded, so the window must be reloaded; (optional) confirm with `Developer: Show Agent Debug Logs` |
+
+---
+
+## Installation and deployment
+
+### Where the resources are
+
+| Key                                 | Value                                                           |
+| ----------------------------------- | --------------------------------------------------------------- |
+| `.github/`                          | The delivery unit. Plain text; copy it into any repository root |
+| `release/payload/`                  | The publishing half                                             |
+| `release/build/`                    | The build and packaging half                                    |
+| `dist/ocf-gate-<version>-setup.exe` | The distribution package                                        |
+| `dist/ocf-gate-<version>/`          | The staged tree                                                 |
+
+### One-click deployment
+
+Double-click `dist/ocf-gate-<version>-setup.exe` and pick the **target repository** on the first page
+
+### Manual deployment
 
 ```text
-# 1) 把 .github/ 复制进目标仓库根
-# 2) 初始化运行时（幂等）
+# 1) Copy .github/ into the target repository root
+# 2) Initialise the runtime
 python  .github\ocf\ocf.py init      # Windows
-python3 .github/ocf/ocf.py init      # 其他平台
-# 3) 登记本仓库受保护的路径（重要，否则出厂只保护文档与编排器自身）
-python .github\ocf\ocf.py deny "src/**"
-# 4) 自检
+python3 .github/ocf/ocf.py init      # other platforms
+# 3) Register the paths this repository must protect
+python .github\ocf\ocf.py protect "src/**"
+# 4) Self-check
 python .github\ocf\ocf.py selftest
-# 5) 把配置生成到产物里（人类专属命令；agent 跑会被拦）
+# 5) Generate the configuration into the artifacts
 python .github\ocf\ocf.py reload
-# 6) 重载 VS Code 窗口，让 hooks 生效
+# 6) Reload the VS Code window so the hooks take effect
 ```
 
-出厂时 `policy.toml` 的 `system.enabled` 是 `false`（维护窗口，方便先验证）。
-确认无误后由人类手工改成 `true`，再重载窗口。注意这个开关的作用域：它停的是
-**三条带 `when` 的规则（自保护×2 + 自授权×1）与三条批准规则**，其余规则不受影响；
-受保护清单也不受它管。
+Out of the box the master switch `system.enabled` in `policy.toml` is `false`; after deploying, set it to `true` first, then run `reload`.
 
-## 开始使用
-
-直接对 agent 说你的任务即可。`ready` 下第一条人类消息会自动推进到 `asking`。
-
-**你只需要说三段**：一句话目标；达成目标的要求（参考设计与流程步骤）；最终交付物。
-agent 对照上下文自己补齐八段计划（类型 / 简要说明 / 行动步骤 / 使用工具 / 涉及文件 / 改动规模与风险 / 交付物 / 自审），
-**只把推导不出来的部分**拿来问你，一次一个问题。模板在 `.github/assets/plan-template.md`：
-英文标题，内容按你使用的语言填。
+### Confirm the deployment
 
 ```text
-asking（推导 + 只问缺口）→ planning（按模板写出八段计划、派独立审查、P0 归零）
-      → 你在自己终端执行 .github\ocf\ocf.py approve "<理由>" → executing → reporting → ready
+python .github\ocf\ocf.py verify      # deployment usability check
+python .github\ocf\ocf.py selftest    # gate status check
 ```
 
-人类可用的一键入口：
+---
 
-| 场景   | 入口           |
-| ------ | -------------- |
-| 交任务 | `/work-intake` |
-| 要计划 | `/work-plan`   |
-| 报 bug | `/bug-route`   |
+## Getting started
 
-## 日常操作
+Just tell the agent your task.
+
+The human-facing skills this system provides: `/work-intake`, `/work-plan`, `/bug-route`.
+
+### Session start
+
+- **User**: say something to the agent.
+- **System**:
+  - the `SessionStart` hook fires: the self-check runs, and its findings are classified as environment / policy / system / ok and injected;
+  - the `UserPromptSubmit` hook fires: `ready` to `asking`, recording `first_prompt` and the transition
+- **Model**: reads the self-check findings, reads what the human said.
+
+### Intake
+
+- **User**: answer the consensus gaps from the model's reply - goal, tools, references, deliverables, code style, plus the docs decision and the consensus. The recommended three-part structure is shown in the `argument-hint` of `.github/agents/orchestrator.agent.md`: Goal / Requirements / Deliverables
+- **System**:
+  - every time the human replies: `grill_rounds` +1
+  - write `prompt-log`
+  - when the model asks for a state transition: verify that `context`, `docs-decision`, `grill-valid` and the rest are complete, and record the transition
+  - on the transition 'asking' to 'planning', clear the intake record and counters
+- **Model**:
+  - asks the human and fills the working elements into `facts`;
+  - when it believes the questions are done: asks the system for the state transition `advance planning`
+
+### Plan
+
+- **User**:
+  - review the plan
+  - (optional) explicitly ask for a plan file
+- **System**: checks that the plan elements `plan-schema`, `zero-p0`, `protected-list-clear`, `stack-env` are complete. The plan is given in the conversation by default
+- **Model**:
+  - writes the plan according to the template
+  - has a subagent audit it independently
+  - repeats the above until the P0 count reaches zero
+  - delivers the action report and the risk design report
+  - asks the human to approve
+
+### Execution
+
+- **User**:
+  - run `python ocf approve "<a reason of at least 8 characters>"` in the terminal, then wake the model
+  - (optional) explicitly ask for tests, a build, visual verification or a file report
+- **System**:
+  - allows the agent to make command-class tool calls (undeclared tools fall back to heuristic matching)
+  - checks whether the commands the agent runs are repeated, silent, or need no waiting
+- **Model**:
+  - carries out the plan
+  - when it has to deviate from the plan: `advance blocked` and re-plan.
+  - writes the report according to the template
+
+---
+
+## Appendix
+
+### Release
+
+Produce every artifact:
 
 ```text
-# 看状态、事实、开关、阈值
-python .github\ocf\ocf.py status
-# 看审计
-python .github\ocf\ocf.py journal 20
-# 跑自检（输出分类为 environment / policy / system / ok，非 ok 即退出码 1）
-python .github\ocf\ocf.py selftest
-# 跑完整用例表 + 结构断言
-python .github\ocf\tests\run.py
-# 授权机器改某个受保护路径
-python .github\ocf\ocf.py allow "docs/adr/0007-*.md"
-# 撤销授权
-python .github\ocf\ocf.py deny "docs/**"
+.\release\build\build.ps1
 ```
 
-## 修改
+**Checks first, then packages**: the case table and structural checks in the delivery set, and the engine self-check.
 
-| 想改什么       | 怎么改                                                                                                                                         | 要重载吗 |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
-| **门禁规则**   | 改 [`policy.toml`](.github/ocf/policy.toml) 的 `[[rule]]`。规则是数据，首个命中即生效，豁免放最前、兜底放最后                                  | 不用     |
-| **阈值**       | 直接改规则里那个数字（如 `command_length_over = 400`）；`[limits]` 只剩 `fail_budget`                                                          | 不用     |
-| **软规则**     | 改 `kind = "soft"` 的规则文字，然后跑 `reload`，常驻契约里那段话会跟着变                                                                       | 不用     |
-| **工具分类**   | 改 `[tools]` 各列表与 `[tools.field]` 的字段路径。新增工具**不必改代码**                                                                       | 不用     |
-| **停用某项**   | 改 `[hooks]` 的总开关或事件开关，然后 `reload`；总开关关掉后那份接线里没有 hook，连程序都不再被启动                                            | 要       |
-| **门禁开关**   | 改 `[system] enabled`。`false` = 维护窗口：会停掉**三条 `when` 规则（自保护×2 + 自授权×1）与三条批准规则**，其余照旧；受保护清单**不受它管**   | 不用     |
-| **自检金丝雀** | 改 `[selftest.canary]`。金丝雀必须走真实 hook 入口，否则证明不了门禁还活着                                                                     | 不用     |
-| **状态机**     | 改 `ocf.py` 的 `TRANSITIONS`（含 states / flow / bypass / gates），并让 `STATES` 与它一致                                                      | 不用     |
-| **挂钩事件**   | 改 `policy.toml` 的 `[hooks]`，然后 `reload`。**不要手改** `.github/hooks/orchestrator.json` —— 它由 `reload` 生成，手改会被断言判失败并被覆盖 | **要**   |
-| **生成的文案** | `copilot-instructions.md`、`policy.toml` 的词表区、`work-control-flow.md` 的参考区都由 `reload` 生成，改配置后跑 `reload`                      | 不用     |
-| **手写文案**   | 改 `work-control-flow.md` 的散文部分、`README.md`、各 `*.prompt.md` / `*.agent.md`                                                             | 不用     |
+### Updating
 
-改完跑 `python .github\ocf\tests\run.py`。它跑 **38 条用例 + 18 条结构断言**，清单在 `run.py` 末尾的 `CHECKS` 里 ——
-不要在这里抄一份（这里曾经只列了四条，而且已经落后）。断言盯的是那些不失败就会静静撒谎的东西：
-markdown 相对链接、agent 名引用、模板与它自己的 schema、策略里写了引擎不读的键，以及每个生成区与代码渲染结果逐字节一致。
+**Run the new exe, and pick the same repository**
 
-⚠️ **改 `.github/**`前先把`system.enabled`设为`false`**：这些文件受自保护，而且自保护挂在
-`enabled`上而不是「是否已批准」，所以`executing` 期间同样有效。人类手工编辑则无此限制。
+Before installing, the payload is checked against the release's hash manifest; if you have done your own development, save your work first.
+`policy.toml`, `protected.txt`, `.orchestrator/` and the `facts` keys migrate as they are; where they differ, the new version is written beside them as a `.dist` of the same name for you to compare.
 
-✅ **`.github/` 下保持 ASCII，但有三处具名豁免**
-`run.py` 的 `NON_ASCII_ALLOWED` 列了 `policy.toml`、`copilot-instructions.md`（都是写给人看和模型读的散文，用项目实际运行的语言）
-以及 `run.py` 自己（它要能对那段中文做断言）。`ocf.py` 刻意不在豁免里 —— 它的输出会进可能不是 UTF-8 的控制台。
-代价是 `/work-intake` 这类菜单项的描述也是英文；想改中文只改 `description` / `argument-hint` 两行。
+### Uninstalling
 
-## 修复
+Deleting `.github/hooks/` and `.orchestrator/` stops all enforcement.
 
-### 自救路径（agent 被门禁锁死时）
+### Daily operations and checks
 
-**按顺序试，第 1 条解决不了再上第 2 条。**
+Key
 
-| 症状                                       | 处理                                                                                                                                                                                                                                                                           |
-| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 报 `[strict-fallback]`（策略文件解析失败） | **门禁只拒绝「变更」，读与思考类工具仍放行**，所以 agent 能帮你定位。先 `git diff .github/ocf/policy.toml` 看改动，再 `git checkout -- .github/ocf/policy.toml` 恢复到最后可用版本；或跑 `python .github\ocf\ocf.py selftest`，它会打印 `[policy] ... failed to parse: <原因>` |
-| agent 什么都干不了（任何原因）             | 把 `.github/hooks/orchestrator.json` 改名为 `.json.off` 并重载窗口 → hooks 全部停用，一切恢复；修好后改回原名再重载                                                                                                                                                            |
-| 想放行机器改门禁代码                       | 把 `policy.toml` 的 `system.enabled` 设为 `false`。⚠️ **前提是文件本身可解析**，文件坏了就必须先用上面两条                                                                                                                                                                     |
-| 想彻底停用                                 | 见「卸载」                                                                                                                                                                                                                                                                     |
+| Command                              | What it does                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `python .github\ocf\ocf.py reload`   | Rebuilds the standing guidance, the vocabulary region of`policy.toml`, and the reference region of the system guide |
+| `python .github\ocf\ocf.py selftest` | Checks the environment, the policy, the hooks and the gate status                                                   |
+| `python .github\ocf\tests\run.py`    | The offline cases and structural checks in the delivery set                                                         |
 
-> 这里曾踩过一个坑：文档原先只写了「把 `system.enabled` 设为 `false`」，而那条路径**恰好在最需要它的时候不可用**（策略文件本身坏了就改不动它）；而且当时严格兜底把只读工具也一并拒绝，agent 连文件都读不到。两处都已修。
+Others
 
-### 常见故障
+| Command                                | What it answers                                            |
+| -------------------------------------- | ---------------------------------------------------------- |
+| `python .github\ocf\ocf.py status`     | State machine state, facts, configuration elements         |
+| `python .github\ocf\ocf.py journal 20` | The audit: state transitions, authorizations, failures     |
+| `python .github\ocf\ocf.py gate`       | Runs the gates: whether a transition is possible right now |
+| `python .github\ocf\ocf.py verify`     | Deployment usability check                                 |
 
-| 症状                                            | 根因                                 | 处理                                                                             |
-| ----------------------------------------------- | ------------------------------------ | -------------------------------------------------------------------------------- |
-| hook 完全没反应                                 | 配置未热加载                         | 重载窗口；查 `Developer: Show Agent Debug Logs`                                  |
-| 自检报 `[environment]` 说 hooks 未指向 `ocf.py` | 挂钩没接上或解释器名不对             | 改 `orchestrator.json` 后重载                                                    |
-| 自检报 `[policy]`                               | 策略缺失或解析失败                   | 修 `policy.toml`；此时门禁**只放行只读与思考类**，一切变更被拒（见「自救路径」） |
-| 自检报 `[system]`                               | 金丝雀未通过 = 门禁不再执行策略      | **最严重**。按提示修策略，不要绕过                                               |
-| 工具调用只弹警告但照旧执行                      | 误用了 stderr + 非 0 退出码          | 拦截只能走 stdout `permissionDecision` + `exit 0`                                |
-| hook 报错说命令里 `$f` 变空                     | hooks 命令串被外层 shell 插值        | 命令串去掉所有 `$`                                                               |
-| 门禁总是拦我改文件                              | 状态还不是 `executing` / `reporting` | 走完 asking→planning，再由你在终端 `approve`                                     |
-| 改了策略却不生效                                | 改的是别的文件                       | 唯一策略文件是 `.github/ocf/policy.toml`；`status` 会打印它                      |
-| 一条命令里只有一个分号却被拦「语句过多」        | 引号内的 `;` 参与计数                | 已修：计数前先屏蔽引号内容与 `@{...}` 字面量                                     |
-| 命令输出被截断 / 丢首行                         | 多行粘贴的输出归属不可靠             | 只发单行短命令                                                                   |
+> [!WARNING]
+> After editing `.github/ocf/`, set the entries you want to enable in the configuration to true first, then run `reload`.
 
-## 更新
+### Modifying
 
-1. 从上游拿到新版 `ocf.py` / `policy.toml` / `orchestrator.json` / `work-control-flow.md` / `tests/`
-2. 覆盖（旧版 `ocf.sh`、`ocf.ps1` 已删除；如你本地还留有这两个文件，一并删掉）
-3. 重载窗口
-4. 跑 `selftest` 与 `tests/run.py` 确认；若 `facts` 键有变更，按 `work-control-flow.md` 第 5 节补齐
-5. `.orchestrator/` 一般不需要迁移
+| What to change            | How                                                                                                                                                                                        | Window reload? |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------- |
+| **Gate rules**            | Edit`[[rule]]` in `policy.toml`. Rules are data, first match wins, exemptions first and catch-alls last                                                                                    | no             |
+| **Thresholds**            | Edit the number inside the rule                                                                                                                                                            | no             |
+| **Soft rules**            | Edit the text of the`kind = "soft"` rule, then `reload`; that paragraph of the standing guidance changes with it                                                                           | no             |
+| **Tool classes**          | Edit the lists under`[tools]` and the field paths under `[tools.field]`. Adding a tool **needs no code change**                                                                            | no             |
+| **Turning something off** | Edit the`[hooks]` master switch or an event switch, then `reload`                                                                                                                          | **yes**        |
+| **The gate switch**       | Edit`[system] enabled`. Only `true` / `false` are accepted; anything else is applied as `true` (strictest) and reported                                                                    | no             |
+| **Self-check canaries**   | Edit`[selftest.canary]`. A canary must go through the real hook entry point, or it cannot prove the gate is alive                                                                          | no             |
+| **The state machine**     | Edit`TRANSITIONS` in `ocf.py`, and keep `STATES` consistent with it                                                                                                                        | no             |
+| **Hook events**           | Edit`[hooks]` in `policy.toml`, then `reload`. **Do not hand-edit** `.github/hooks/orchestrator.json` - it is generated by `reload`, and a hand edit fails an assertion and is overwritten | **yes**        |
+| **Generated prose**       | The standing guidance, the configuration's vocabulary region and the guide's reference region are all generated by`reload`; run it after a configuration change                            | no             |
+| **Hand-written prose**    | The prose part of the system guide, this README and its Chinese version, the prompt and agent definitions                                                                                  | no             |
 
-## 卸载
+### Self-rescue (when the agent is locked out by the gate)
 
-删掉 `.github/hooks/` 与 `.orchestrator/` 即停止强制。
-`.github/{ocf,agents,prompts}` 与两个 `.md` 是纯文本，留着无害。
+| Symptom                                    | What to do                                                                                                                                                                                                                                     |
+| ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The policy file fails to parse             | **The gate refuses only "changes"; reading and thinking tools still pass**, so the agent can help you locate it. Look at the `policy.toml` diff and restore the last working version; or run `selftest`, which prints the parse failure reason |
+| The agent can do nothing at all            | Rename`.github/hooks/orchestrator.json` to `.json.off` and reload the window, then let the agent fix it                                                                                                                                        |
+| You want to let the machine edit gate code | Set`system.enabled` to `false` in `policy.toml`. ⚠️ **Only if the file itself parses**; if it is broken, use the first two rows first                                                                                                          |
+| You want to stop using it entirely         | See "Uninstalling"                                                                                                                                                                                                                             |
 
-## 设计取舍与已知限制
+### Common failures
 
-| 项                           | 说明                                                                                                                                                                                                                                 |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 失败侦测靠 agent 自觉        | hook 在工具**成功后**触发，无法自动捕获失败；靠 `ocf.py fail` 记账 + 审计留痕，**不是硬保证**                                                                                                                                        |
-| `facts` 是纯文本             | 定位是防手滑与流程遗漏，**不防恶意对手**                                                                                                                                                                                             |
-| 批准在文本层判定，非进程身份 | 靠「命令串 invoke 了入口脚本 + 出现人类专属子命令」拦截，并额外拦「把这类命令写进可执行文件」。**把命令编码后再写、或复用已存在的脚本仍可能绕过。** TTY 校验无效 —— agent 的终端也是真终端。彻底解决需要进程身份，超出 hook 模型能力 |
-| 「什么算具体答复」无代码判定 | 什么算「具体答复」无法用代码判定；系统**不做关键词识别**，判定交给 agent，只有纪律约束                                                                                                                                               |
-| 门禁强度上限由模型决定       | 系统约束的是**流程与权限**，不是判断质量。它拦得住「提前动手」，拦不住「理解错了」，也不可能把弱模型提升到强模型                                                                                                                     |
-| 未知工具靠名字启发           | 名字里没有动作动词的工具会走过；但只要它**带命令**就会按执行类工具判定，不会不受检查                                                                                                                                                 |
-| 金丝雀要有人跑才有用         | 自检只在 SessionStart 与 `selftest` 时执行；若 hooks 整体不再投递，「自检没输出」就是唯一信号，而「没有信号」很容易被忽略                                                                                                            |
-| 内联 agent hooks 未采用      | 它能把强制范围限定到单个 agent，但需要 `chat.useCustomAgentHooks` 设置，一旦关闭门禁会静默失效，所以仍用 workspace 级 hooks                                                                                                          |
+| Symptom                                                                          | Root cause                                                                                     | What to do                                                                   |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| The hook does nothing at all                                                     | Configuration not hot-reloaded                                                                 | Reload the window; check`Developer: Show Agent Debug Logs`                   |
+| The self-check reports an environment finding: the hooks do not point at`ocf.py` | The agent did not pick Work Orchestrator, the hook is broken, or the interpreter name is wrong | Fix`orchestrator.json` and reload                                            |
+| The self-check reports a policy finding                                          | Policy missing or unparseable                                                                  | See "Self-rescue"                                                            |
+| The self-check reports a system finding                                          | A canary failed, so the gate is no longer enforcing the policy                                 | **The most serious one.** Fix the policy as directed; do not route around it |
+| The hook errors saying`$f` became empty in a command                             | The hooks command string was interpolated by the outer shell                                   | Remove every `$` from that string                                            |
+| The gate keeps blocking the agent's file edits                                   | The state is not`executing` / `reporting`                                                      | Go through intake and planning, then run`approve` in your terminal           |
+| A policy change has no effect                                                    | You edited a different file                                                                    | The policy file is`.github/ocf/policy.toml`; `status` prints it              |
+
+### Design trade-offs and common questions
+
+| Item                                                            | Notes                                                                                                                                                                 |
+| --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Failure detection is self-reported                              | The hook fires**after** a tool succeeded, so it cannot catch a failure on its own; it relies on the agent recording it plus the audit trail. **Not a hard guarantee** |
+| `facts` is plain text                                           | The design does not consider a user routing around it maliciously                                                                                                     |
+| Approval is enforced on the text layer, not by process identity | The design does not consider a user bypassing it maliciously                                                                                                          |
+| "What counts as a substantive answer" has no code test          | Related to model quality; this project cannot lift a 3B model to the quality of a 512B one                                                                            |
+| The gate's strength ceiling is set by the model                 | Related to model quality; the system constrains workflow and permission, not the quality of judgement                                                                 |
+
+The remaining limitations are in the "Known limitations" section of `.github/work-control-flow.md`.
+
+### Contact
+
+- If you have opinions and questions, or feedback on the experience or a bug, please write to **liwenhu2y@outlook.com**.
+- Or open an issue or a discussion at [GitHub]().
+
+### Glossary
+
+| Term                   | Chinese       | Meaning                                                                                                                                           |
+| ---------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **State machine**      | 状态机        | What is allowed right now.`ready / asking / planning / executing / reporting / blocked`, six states plus the transitions between them             |
+| **Gate**               | 门禁          | **A precondition of a state transition**                                                                                                          |
+| **Rule**               | 规则          | The verdict for**one tool call**: `allow` / `ask` / `deny` / `require_approval`. First match wins                                                 |
+| **Hard rule**          | 硬规则        | A rule the hook reads and answers with outside the conversation                                                                                   |
+| **Soft rule**          | 软规则        | Natural-language semantics cannot be checked by code, so the model applies it from the standing guidance                                          |
+| **Configuration**      | 配置          | The single file`.github/ocf/policy.toml`: rules, thresholds and tool classes all live there. Rules are data, so changing behaviour is a data edit |
+| **Authorization**      | 授权          | The human runs it in their own terminal:`approve`                                                                                                 |
+| **Protected list**     | 受保护清单    | `.github/protected.txt`                                                                                                                           |
+| **Maintenance window** | 维护窗口      | `system.enabled`                                                                                                                                  |
+| **Canary**             | 金丝雀        | A probe that runs through the real hook entry point; at least one must deny and one must allow, to prove the gate is**effective**                 |
+| **Facts**              | 事实          | The elements the human supplies (goal, deliverables, environment declaration, audit result), written in`.orchestrator/facts`                      |
+| **Intake**             | 受理          | The process of drawing the background out while in`asking`                                                                                        |
+| **Payload**            | 载荷 / 中间树 | `release/payload/` is what gets published                                                                                                         |

@@ -2,8 +2,12 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+# The release output: a payload tree and the artifacts built from it, both reproducible from source.
+dist/
 
-# Runtime state: machine-written and volatile, and the design treats .orchestrator/ as "not packaged".
-# The protected list is deliberately NOT here: it lives at .github/protected.txt, because a list that
-# is not versioned is simply absent on a fresh clone, and every rule that reads it still looks correct.
+# Deliberately NOT ignored, unlike a typical project:
+#   .orchestrator/          the runtime record - state, facts, journal, exec log. It is committed, which
+#                           is what keeps the audit and the state alive across a clone.
+#   .github/protected.txt   a list that is not versioned is simply absent on a fresh clone, and every
+#                           rule that reads it still looks correct.
 .orchestrator/

@@ -33,6 +33,6 @@
 
 ## Verification status
 
-- No test was run unless the human asked for one in this conversation
-- No visual or screenshot test was run
+- What ran, and under whose authorization
+- Anything refused, and what was said
 - Points the human has to verify: ...

@@ -19,8 +19,9 @@ RUN pip install --no-cache-dir -r .github/ocf/requirements.txt
 
 COPY . .
 
-# Runs the case table (each case through the real hook entry point) plus the structural checks:
-# repository ASCII, markdown links, agent cross-references, and gate-file protection.
+# Runs the case table (each case through the real hook entry point) plus the structural checks: repository
+# ASCII, markdown links, section references, agent cross-references, gate-file protection, and the rest
+# of the tuple in run.py's CHECKS.
 #
 # Deliberately the same command a human runs on the host, with no test framework in between: the
 # suite needs only CPython, so there is nothing for a framework to arrange. An earlier revision used

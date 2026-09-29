@@ -1,0 +1,115 @@
+OCF Gate
+========
+
+A control plane between a human and an AI coding agent. It makes "no action before the human
+approves" a gate the agent cannot open for itself, and it keeps the record that says whether that
+gate is still working.
+
+There is one way to deploy it: run ocf-gate-<version>-setup.exe. See "Deploy" below.
+
+What is here
+------------
+
+    INSTALL.txt         this file
+    VERSION             the release this payload was built from
+    .github\            the gate itself: the program, the rules, the hooks, the agents, the tests
+
+This folder is what the .exe packs. It is not the deployment: deploying copies .github\ into a
+repository, and this folder is just where those files come from. It travels inside the .exe and is
+unpacked to a temporary folder that is discarded when the installer exits.
+
+
+Requirements
+------------
+
+    Python 3.11 or newer, or an older Python with the TOML fallback:
+        pip install "tomli>=2.0.0"
+
+    The installer checks this before it writes anything, and refuses with the line above if it cannot
+    find one.
+
+    VS Code with agent hooks, in a workspace where hooks are not disabled by organisation policy.
+
+    The chat permission level must NOT be "Autopilot", and the user setting "chat.autoReply" must be
+    false. With either of them on, VS Code answers an agent's question by itself, and the gate cannot
+    tell that answer apart from a human's - they arrive on the same event. This is the one prerequisite
+    the installer cannot check for you.
+
+
+Deploy
+------
+
+Double click ocf-gate-<version>-setup.exe and choose the repository the gate should govern. That is
+the whole of it. The installer unpacks this payload to a temporary folder, runs the gate's own
+deployment against the repository you picked, and throws the temporary folder away when it exits.
+
+It also compares what it unpacked against the hashes the release shipped with, and refuses before
+writing anything if a file does not match. That catches a copy that was damaged or truncated on the
+way here; it is not a signature, because a manifest travels with the files it describes.
+
+The deployment:
+
+    - copies .github\ into the target, never replacing a policy.toml or protected.txt that is already
+      there (the shipped version is written beside them as .dist, so nothing is lost),
+    - writes the target's generated files from the target's OWN policy, so the text the model reads
+      and the rules the gate enforces are the same revision,
+    - initialises the runtime, and runs the installer's own checks against the result.
+
+It prints the four steps that are left, all of them yours:
+
+    1. Record what the machine may not change:
+
+           python .github\ocf\ocf.py protect "<path>"
+
+    2. Arm the gate: set [system] enabled = true in .github\ocf\policy.toml, then
+
+           python .github\ocf\ocf.py reload
+
+    3. Reload the VS Code window. Hooks are read when the window starts and are not re-read after.
+    4. Start a conversation and confirm the gate answers.
+
+Until it is armed, the gate is installed but refuses nothing - and says so on every turn.
+
+
+Check it
+--------
+
+    python .github\ocf\ocf.py verify      is this deployment usable: wired, current, answering
+    python .github\ocf\ocf.py selftest    is the gate armed and alive right now
+    python .github\ocf\tests\run.py       the case table and the structural checks
+
+`verify` is the one to run first. It feeds a realistic payload for each hook event through the real
+entry point and checks the answer, which is this side of the editor's contract. The other side - that
+VS Code calls the hooks at all, with the fields this program reads - is confirmed by the window reload
+and one real conversation.
+
+
+Updating, and removing
+----------------------
+
+Run the installer again with the same repository: it replaces the gate, keeps your policy and your
+protected list, and leaves the shipped policy beside yours as policy.toml.dist to compare. To deploy
+into a second repository, run it again and pick that one.
+
+To stop enforcing, set [system] enabled = false and run reload. To uninstall entirely, set
+[hooks] enabled = false and run reload - that writes a wiring file with no hooks in it, so VS Code
+stops starting this program at all - and then delete .github\hooks\ and .orchestrator\. The rest is
+plain text and harmless.
+
+
+Read this before relying on it
+------------------------------
+
+This is a guardrail, not a sandbox. It reads tool calls, not their effects: a command it cannot parse,
+or a tool it has not been told about, is judged on inference. It constrains process and authority - who
+may approve, what may be changed, which commands may run - and it does not make a weak model strong. It
+is built to make its own failures visible; it is not built to stop someone who is determined to get
+past it. The section "design tradeoffs and known limits" of the system guide is honest about the rest.
+
+
+Where the documentation is
+--------------------------
+
+    .github\work-control-flow.md        the system guide, including the command reference
+    .github\ocf\policy.toml             the rules, and the generated vocabulary that documents them
+    .github\copilot-instructions.md     the contract the model reads on every turn

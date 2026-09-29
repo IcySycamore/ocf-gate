@@ -191,6 +191,37 @@ def read_frontmatter(path):
     return fields
 
 
+FRONTMATTER_REQUIRED = {"agent": ("name", "description"), "prompt": ("description",)}
+
+
+def frontmatter_problems(path, kind):
+    """Frontmatter that does not parse is worse than none: the file loads and every field reads absent.
+
+    `read_frontmatter` returns nothing at all for a file whose first line is not `---`, which is exactly
+    what one stray blank line produces - and the cross-reference check then reports nothing, because it
+    treats an absent key as "not declared". That is how a prompt bound to no agent stayed green.
+    """
+    name = os.path.basename(path)
+    with open(path, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    if not lines or lines[0].strip() != "---":
+        return ["%s has no frontmatter: the file has to start with --- on its own first line" % name]
+    closed = False
+    for line in lines[1:]:
+        if line.strip() == "---":
+            closed = True
+            break
+        if line.strip() and not line.startswith((" ", "\t")) and ":" not in line:
+            return ["%s has frontmatter that does not parse: %r is not a key: value line"
+                    % (name, line[:60])]
+    if not closed:
+        return ["%s has no closing --- in its frontmatter, so the line that should close it is part "
+                "of the value above" % name]
+    fields = read_frontmatter(path) or {}
+    return ["%s declares no %s" % (name, key)
+            for key in FRONTMATTER_REQUIRED[kind] if not fields.get(key)]
+
+
 def parse_flow_list(value):
     if value is None:
         return None
@@ -226,6 +257,10 @@ def check_agent_cross_references():
     inventory = agent_inventory()
     known = ", ".join(sorted(inventory))
     problems = []
+    agents = os.path.join(REPO, ".github", "agents")
+    for name in sorted(os.listdir(agents)):
+        if name.endswith(".agent.md"):
+            problems.extend(frontmatter_problems(os.path.join(agents, name), "agent"))
     for display, (filename, fields) in sorted(inventory.items()):
         tools = parse_flow_list(fields.get("tools")) or []
         for token in tools:
@@ -246,6 +281,7 @@ def check_agent_cross_references():
     for name in sorted(os.listdir(prompts)):
         if not name.endswith(".prompt.md"):
             continue
+        problems.extend(frontmatter_problems(os.path.join(prompts, name), "prompt"))
         fields = read_frontmatter(os.path.join(prompts, name)) or {}
         target = (fields.get("agent") or "").strip().strip('"').strip("'")
         if target and target not in inventory:
@@ -356,50 +392,58 @@ def test_markdown_links():
     check_markdown_links()
 
 
+WORKFLOW = os.path.join(REPO, ".github", "work-control-flow.md")
+
+# The sections other files cite by number. A citation is a number, so renumbering the document silently
+# re-points every one of them and nothing complains: the agent simply follows the wrong section. The
+# titles below are what this check believes that document's numbering is, and they are compared with the
+# document on every run - so the list cannot drift, it can only be deliberately updated.
+CITED_SECTIONS = {2: "Commands", 5: "Intake", 6: "Planning and approval", 7: "Terminal discipline",
+                  8: "Delivery", 9: "Limits and switches", 10: "Known limitations"
+                  }
+SECTION_HEADING = re.compile(r"(?m)^##\s+(\d+)\.\s+(.+?)\s*$")
+CITATION = re.compile(r"section\s+(\d+)|\u7b2c\s*(\d+)\s*\u8282|\u00a7\s*(\d+)")
+
+
+def check_section_references():
+    """A citation by number outlives the numbering it was written against.
+
+    Every other cross-reference in this suite is a name or a path, which fails loudly when it moves.
+    A number does not: the document gains a section, everything after it shifts, and "see section 9"
+    quietly starts pointing at a different section - which is a silent failure of the same kind this
+    suite exists to catch. These documents are edited by whoever deploys the gate, so it is theirs too.
+    """
+    with open(WORKFLOW, "r", encoding="utf-8") as handle:
+        headings = {int(number): title for number, title in SECTION_HEADING.findall(handle.read())}
+    problems = []
+    if sorted(headings) != list(range(1, len(headings) + 1)):
+        problems.append("the sections are numbered %s, so no citation can be trusted to land"
+                        % ", ".join(str(number) for number in sorted(headings)))
+    for number, title in sorted(CITED_SECTIONS.items()):
+        if number not in headings:
+            problems.append("section %d (%s) is cited from other files and is gone" % (number, title))
+        elif headings[number] != title:
+            problems.append("section %d is %r, and the files citing it by number expect %r - a "
+                            "renumbering re-points every one of them"
+                            % (number, headings[number], title))
+    for path in iter_markdown_files():
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+        for index, line in enumerate(lines, 1):
+            for groups in CITATION.findall(line):
+                number = int([group for group in groups if group][0])
+                if number not in headings:
+                    problems.append("%s:%d cites section %d, which does not exist"
+                                    % (os.path.relpath(path, REPO), index, number))
+    assert not problems, "; ".join(problems)
+
+
+def test_section_references():
+    check_section_references()
+
+
 def test_gate_files_protected():
     check_gate_files_protected()
-
-
-def check_prompt_instrumentation():
-    """A UserPromptSubmit must leave a record, because that record is what settles who spoke.
-
-    The gate has no reliable signal for "a human really replied". Until the instrumentation answers
-    that, no rule may depend on one - a rule built on an unverified signal fails by locking the agent
-    out, which is the other accident this project exists to prevent.
-    """
-    root = tempfile.mkdtemp(prefix="ocf-prompt-")
-    try:
-        os.makedirs(os.path.join(root, ".github", "ocf"))
-        os.makedirs(os.path.join(root, ".orchestrator"))
-        shutil.copyfile(POLICY, os.path.join(root, ".github", "ocf", "policy.toml"))
-        with open(os.path.join(root, ".orchestrator", "state"), "w", encoding="utf-8") as handle:
-            handle.write("asking\n")
-        env = dict(os.environ)
-        env["OCF_ROOT"] = root
-        payload = {"hook_event_name": "UserPromptSubmit", "session_id": "abcdef1234567890",
-                   "prompt": "a human sentence"}
-        proc = subprocess.run([sys.executable, ENTRY, "hook"], input=json.dumps(payload).encode("utf-8"),
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
-        path = os.path.join(root, ".orchestrator", "prompt-log")
-        assert os.path.exists(path), "a UserPromptSubmit wrote no prompt-log, so nothing can be settled"
-        with open(path, "r", encoding="utf-8") as handle:
-            line = handle.read().strip()
-        assert "abcdef12" in line, "prompt-log did not record the session: %r" % line
-        assert "a human sentence" in line, "prompt-log did not record the prompt: %r" % line
-        # The injected line must report what the agent could not derive, not instruct it to ask for the
-        # keys one at a time: the second shape is what this state used to mean, and it is what made the
-        # agent interrogate the human for seven answers instead of deriving them.
-        emitted = proc.stdout.decode("utf-8", "replace")
-        assert "not derivable from context" in emitted, (
-            "the asking line no longer reports what could not be derived; emitted: %r" % emitted[:300])
-        assert "Ask one at a time" not in emitted, (
-            "the asking line still orders the agent to interrogate the human; emitted: %r" % emitted[:300])
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_prompt_instrumentation():
-    check_prompt_instrumentation()
 
 
 def scan_non_ascii():
@@ -425,28 +469,19 @@ def scan_non_ascii():
 
 
 # The ASCII rule keeps a class of encoding bugs out of code and out of everything the toolchain
-# touches. These files are not code that runs in the toolchain: policy.toml is the human's own rules,
-# copilot-instructions.md and the reference region of work-control-flow.md are prose addressed to the
-# human and the model in the language the project is run in, and run.py has to be able to state the real
-# text it asserts on - a check about where spaces land in Chinese cannot be written in English and still
-# test Chinese. work-control-flow.md joins the list only because of its reference region: that region is
-# rendered from the rules, so it necessarily inherits the language the human wrote them in. ocf.py is
-# deliberately NOT on this list, because its output is what reaches a console that may not be UTF-8. The
-# exemption is a list of named paths rather than a suffix or a folder, because the value of the rule is
-# that it has no convenient way around it: a new file has to argue for itself here.
-NON_ASCII_ALLOWED = (
-    ".github/ocf/policy.toml",
-    ".github/copilot-instructions.md",
-    ".github/work-control-flow.md",
-    ".github/ocf/tests/run.py",
-)
+# touches: a file the toolchain reads is a file the toolchain has to encode consistently. Nothing under
+# .github is exempt, and the list being empty is the point - a suffixed or folder-wide exemption has a
+# convenient way around it, while a new file that wants one has to argue for itself in a diff. The two
+# documents written in the project's own language, README.md and POLICY-GUIDE.md, live at the repository
+# root, outside the folder this scan walks.
+NON_ASCII_ALLOWED = ()
 
 
 def test_repo_is_ascii():
-    """Every agent-facing file under .github is ASCII, apart from the two prose files named above."""
+    """Every file under .github is ASCII."""
     offenders = [path for path in scan_non_ascii() if path not in NON_ASCII_ALLOWED]
-    assert not offenders, ("non-ASCII bytes in: %s (allowed: %s)"
-                           % (", ".join(offenders), ", ".join(NON_ASCII_ALLOWED)))
+    assert not offenders, ("non-ASCII bytes in: %s. Nothing under .github is exempt"
+                           % ", ".join(offenders))
 
 
 def check_plan_template():
@@ -497,9 +532,9 @@ def check_policy_vocabulary():
         {"id": "probe-unknown-exception", "enabled": True, "result": "deny",
          "if": {"class": "exec"}, "unless": {"not_an_unless_condition": 1}},
         {"id": "probe-hard-without-if", "enabled": True, "result": "deny"},
-        {"id": "probe-soft-without-occasion", "kind": "soft", "result": "a sentence", "if": {}},
+        {"id": "probe-soft-without-occasion", "kind": "soft", "message": "a sentence", "if": {}},
         {"id": "probe-soft-without-a-sentence", "kind": "soft", "if": {"occasion": "answer"}},
-        {"id": "probe-soft-on-a-tool-condition", "kind": "soft", "result": "a sentence",
+        {"id": "probe-soft-on-a-tool-condition", "kind": "soft", "message": "a sentence",
          "if": {"occasion": "answer", "class": "exec"}},
     ]
     found = "; ".join(text for _, text in ocf.policy_findings(probe))
@@ -544,209 +579,6 @@ def test_policy_vocabulary():
     check_policy_vocabulary()
 
 
-def check_transition_table():
-    """The one table must agree with the states, and the CLI vocabulary must agree with the dispatcher.
-
-    `STATES` stays the literal and the table is built from it, so this compares the two rather than
-    deriving one from the other: a derived value would satisfy the comparison by construction, which is
-    indistinguishable from having no check at all. The vocabulary half matters for the same reason: a
-    command in the table but not in the dispatcher is unreachable, and one in the dispatcher but not in
-    the table is a name the usage text never mentions.
-    """
-    ocf = load_ocf_module()
-    table = ocf.TRANSITIONS
-    problems = []
-    if set(table["states"]) != set(ocf.STATES):
-        problems.append("the table's states %s differ from STATES %s"
-                        % (sorted(set(table["states"])), sorted(set(ocf.STATES))))
-    for target in table["agent_targets"]:
-        if target not in ocf.STATES:
-            problems.append("the agent target %r is not a state" % target)
-    mentioned = set(table["agent_targets"])
-    for pair in table["gates"]:
-        for name in pair:
-            if name not in ocf.STATES:
-                problems.append("a gate key names %r, which is not a state" % name)
-        mentioned.update(pair)
-    unmentioned = sorted(set(ocf.STATES) - mentioned)
-    if unmentioned:
-        problems.append("no part of the table mentions the state(s) %s, so nothing governs them"
-                        % ", ".join(unmentioned))
-    # The happy path is drawn from the table now, so it is checked like the rest of it. A state renamed
-    # in STATES used to leave the diagram in the contract behind, and the diagram is what gets read.
-    for name in table["flow"]:
-        if name not in ocf.STATES:
-            problems.append("the flow names %r, which is not a state" % name)
-    if table["flow"][0] != table["flow"][-1]:
-        problems.append("the flow starts at %r and ends at %r, so it does not describe a cycle"
-                        % (table["flow"][0], table["flow"][-1]))
-    if table["bypass"] not in ocf.STATES:
-        problems.append("the bypass names %r, which is not a state" % table["bypass"])
-    if table["bypass"] in table["flow"]:
-        problems.append("the bypass %r is on the happy path, so it bypasses nothing" % table["bypass"])
-    for name in ocf.SOFT_OCCASIONS:
-        if not name.isascii() or name != name.strip().lower():
-            problems.append("the occasion %r is not a plain lowercase token; it is matched verbatim "
-                            "against the policy, so a stray space makes a rule silently inert" % name)
-    declared = set()
-    for group in table["commands"].values():
-        for line in group:
-            declared.update(line)
-    handlers = set(ocf.COMMAND_HANDLERS)
-    if handlers != declared:
-        problems.append("the CLI vocabulary differs: only in the dispatcher %s; only in the table %s"
-                        % (sorted(handlers - declared), sorted(declared - handlers)))
-    missing_usage = sorted(name for name in declared if name not in table["usage"])
-    if missing_usage:
-        problems.append("the usage text has no fragment for %s" % ", ".join(missing_usage))
-    assert not problems, "; ".join(problems)
-
-
-def test_transition_table():
-    check_transition_table()
-
-
-GATED_PAIRS = (("asking", "planning"), ("planning", "executing"))
-
-
-def check_gated_transitions():
-    """Every transition the machine gates must really run gates, and must name states that exist.
-
-    The expectation is written out above rather than taken from the table, because a check that iterates
-    the table to build its own expectation stays green when a key is renamed or emptied - and that is
-    exactly the omission it exists to catch. `transition_gate_names` falls back to an empty tuple for an
-    unknown pair, so a renamed key would advance the machine with no gate running and nothing printed.
-
-    Blind spot, stated rather than implied: it does not notice a gated pair deleted outright, only a pair
-    renamed or emptied. It guards the keys, not the set of transitions.
-    """
-    ocf = load_ocf_module()
-    problems = []
-    for pair in GATED_PAIRS:
-        for name in pair:
-            if name not in ocf.STATES:
-                problems.append("%s names %r, which is not a state in STATES" % (pair, name))
-        names = ocf.transition_gate_names(*pair)
-        if not names:
-            problems.append("the transition %s -> %s runs no gate at all, so it would advance in "
-                            "silence" % pair)
-        for name in names:
-            if name not in ocf.GATES:
-                problems.append("the transition %s -> %s names a gate the engine does not have: %s"
-                                % (pair[0], pair[1], name))
-    for pair in ocf.TRANSITIONS["gates"]:
-        for name in pair:
-            if name not in ocf.STATES:
-                problems.append("a key of the transition table names %r, which is not a state" % name)
-    assert not problems, "; ".join(problems)
-
-
-def test_gated_transitions():
-    check_gated_transitions()
-
-
-PROBE_POLICY = """\
-[[rule]]
-id = "probe-long-command"
-enabled = true
-result = "deny"
-why = "too long for the probe"
-
-[rule.if]
-class = "exec"
-command_length_over = 10
-
-[[rule]]
-id = "probe-default"
-enabled = true
-result = "allow"
-why = "short enough for the probe"
-
-[rule.if]
-class = "exec"
-"""
-
-
-def check_new_rule_shape():
-    """The newer rule shape (one condition block, one result) must decide on its own.
-
-    Nothing in the shipped policy uses it yet, so without this the code would stay unverified until the
-    policy is converted - and "unverified until later" is how a silent failure gets in. The probe drives
-    the real hook entry point, so it also proves the dispatch from evaluate_rule actually happens.
-    """
-    root = tempfile.mkdtemp(prefix="ocf-newshape-")
-    try:
-        os.makedirs(os.path.join(root, ".github", "ocf"))
-        os.makedirs(os.path.join(root, ".orchestrator"))
-        with open(os.path.join(root, ".github", "ocf", "policy.toml"), "w",
-                  encoding="utf-8", newline="\n") as handle:
-            handle.write(PROBE_POLICY)
-        with open(os.path.join(root, ".orchestrator", "state"), "w", encoding="utf-8") as handle:
-            handle.write("asking\n")
-        env = dict(os.environ)
-        env["OCF_ROOT"] = root
-
-        def verdict(command):
-            payload = {"hook_event_name": "PreToolUse", "session_id": "abcdef1234567890",
-                       "tool_name": "run_in_terminal", "tool_input": {"command": command}}
-            proc = subprocess.run([sys.executable, ENTRY, "hook"],
-                                  input=json.dumps(payload).encode("utf-8"),
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
-            out = json.loads(proc.stdout.decode("utf-8", "replace"))
-            return out["hookSpecificOutput"]["permissionDecision"], \
-                out["hookSpecificOutput"]["permissionDecisionReason"]
-
-        decision, reason = verdict("echo one two three")
-        assert decision == "deny", "the new shape did not deny: %r" % decision
-        assert "too long for the probe" in reason, (
-            "the denial did not come from the new-shaped rule, so it may have been the fail-safe; "
-            "reason: %r" % reason[:200])
-        decision, reason = verdict("echo")
-        assert decision == "allow", "the new shape did not fall through to its own default: %r" % decision
-        assert "short enough for the probe" in reason, "wrong rule answered: %r" % reason[:200]
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_new_rule_shape():
-    check_new_rule_shape()
-
-
-def check_soft_rules_never_gate():
-    """A soft rule must be invisible to the gate, proven by a rule that would deny everything.
-
-    A soft rule's logic is a sentence, not a verdict. If the gate ever reads one as a verdict, the
-    action becomes that sentence, DECISION_MAP does not recognise it, and the fail-safe turns every
-    tool call into a denial - a total lockout caused by adding a sentence to a config file. So the
-    probe here is a soft rule with the broadest possible occasion: if the skip were removed, this
-    check would deny rather than pass.
-    """
-    ocf = load_ocf_module()
-    root = build_root({"state": "executing"})
-    try:
-        policy, warnings = ocf.load_policy(root)
-        assert not warnings, "the probe policy did not load cleanly: %r" % (warnings,)
-        soft = [rule for rule in policy["rule"] if rule.get("kind") == "soft"]
-        assert soft, ("the shipped policy has no soft rule, so this check proves nothing: the "
-                      "generated instructions would be written from an empty set")
-        payload = {"tool_name": "run_in_terminal",
-                   "tool_input": {"command": "python .github/ocf/ocf.py status"}}
-        context = ocf.Context(root, policy, payload)
-        probe = {"id": "probe-soft", "kind": "soft", "enabled": True,
-                 "result": "deny", "if": {"occasion": "act"}}
-        for rule in list(soft) + [probe]:
-            verdict = ocf.evaluate_rule(context, rule)
-            assert verdict is None, (
-                "the soft rule %r produced the verdict %r. A sentence read as a verdict denies "
-                "everything the fail-safe cannot map." % (rule.get("id"), verdict))
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_soft_rules_never_gate():
-    check_soft_rules_never_gate()
-
-
 def _first_difference(written, rendered):
     """Name the first line that differs, so the message points at the change instead of describing it.
 
@@ -760,15 +592,20 @@ def _first_difference(written, rendered):
                                                                len(rendered.splitlines()))
 
 
-def check_generated_region(ocf, policy, relative, rendered, markers, writer, must_contain):
-    """One region of one file: idempotent, exactly replaced, half-marked refused, and current.
+def check_generated_region(ocf, policy, artifact, must_contain):
+    """One generated region of one file: idempotent, exactly replaced, half-marked refused, and current.
 
-    Shared by both generated regions rather than written twice. The four failures it looks for are
-    silent in the same way and for the same reasons, and the second copy of a check is how the first
-    copy stops being run: the vocabulary region and the contract region fail identically, so they are
+    Shared by every generated region rather than written once per file. The four failures it looks for
+    are silent in the same way and for the same reasons, and the second copy of a check is how the first
+    copy stops being run - the vocabulary region and the contract region fail identically, so they are
     checked by one piece of code.
+
+    The file, its markers and its renderer all come from the generated table, so this cannot be checking
+    a path that is not the one `reload` writes.
     """
-    begin, end = markers
+    relative = artifact.relative
+    rendered = artifact.render(policy)
+    begin, end = artifact.markers
     block = "%s\n%s\n%s" % (begin, rendered, end)
     prose = "hand-written text\n\n"
     probe = build_root({"state": "executing"})
@@ -785,20 +622,20 @@ def check_generated_region(ocf, policy, relative, rendered, markers, writer, mus
                 return handle.read()
 
         seed(prose + block + "\n")
-        writer(probe, policy)
+        ocf.write_generated(probe, policy, artifact)
         assert current() == prose + block + "\n", (
             "reload changed %s even though it already matched, so it is not idempotent and every run "
             "rewrites the human's file: %r" % (relative, current()[:120]))
 
         seed(prose + begin + "\nstale\n" + end + "\ntail\n")
-        writer(probe, policy)
+        ocf.write_generated(probe, policy, artifact)
         assert current() == prose + block + "\ntail\n", (
             "reload did not replace exactly the marked region of %s, so it either lost the text "
             "around it or left the stale content in place: %r" % (relative, current()[:200]))
 
         seed(prose + end + "\ntail\n")
         try:
-            writer(probe, policy)
+            ocf.write_generated(probe, policy, artifact)
         except ocf.OcfError:
             pass
         else:
@@ -826,46 +663,42 @@ def check_generated_instructions():
     """The written contract must equal what the policy renders, and half a region must be refused."""
     ocf = load_ocf_module()
     policy, _ = ocf.load_policy(REPO)
-    check_generated_region(ocf, policy, ocf.INSTRUCTIONS_REL, ocf.render_instructions(policy),
-                           (ocf.INSTRUCTIONS_BEGIN, ocf.INSTRUCTIONS_END), ocf.write_instructions,
+    check_generated_region(ocf, policy, ocf.generated(ocf.INSTRUCTIONS_REL),
                            "the soft rules reach the model only through that region")
 
 
 def check_vocabulary_region():
     """The policy file must document exactly the identifiers the engine reads - both directions.
 
-    One direction is the region on disk matching the renderer. The other is the vocabulary itself: a
-    key the engine reads with no description is a key nobody can use correctly, and a description of a
-    key the engine no longer reads is an instruction to write a policy that fails. The prose version of
-    this list did exactly that, which is why it is generated now.
+    One half is the region on disk matching the renderer. The other is the vocabulary itself: a key the
+    engine reads with no description is a key nobody can use correctly, and a description of a key the
+    engine no longer reads is an instruction to write a policy that fails. The prose version of this
+    list did exactly that, which is why it is generated now.
+
+    The conditions used to need a third half - the same comparison against three sets of callables and
+    a separate table of descriptions, held together by an assertion much like the one below. They are
+    one registry now, so there is nothing left to compare: it cannot describe a condition it does not
+    read, or read one it does not describe.
     """
     ocf = load_ocf_module()
     policy, _ = ocf.load_policy(REPO)
-    described = {name for name, _ in ocf.CONDITION_HELP}
-    implemented = (set(ocf.FLAT_CONDITIONS) | set(ocf.FLAT_VALUE_CONDITIONS)
-                   | set(ocf.FLAT_FACT_KEYS) | {"listed_in"})
-    missing = sorted(implemented - described)
-    invented = sorted(described - implemented)
-    assert not missing, ("%s is read by the engine but has no description, so nobody can write a "
-                         "correct rule with it" % ", ".join(missing))
-    assert not invented, ("%s is documented as a condition but the engine does not read it, so a "
-                          "policy written from this documentation would fail" % ", ".join(invented))
     for label, help_table, values in (
-            ("when", ocf.WHEN_HELP, ocf.WHEN_VALUES),
-            ("result", ocf.ACTION_HELP, ocf.ACTION_VALUES),
             ("occasion", ocf.OCCASION_HELP, ocf.SOFT_OCCASIONS),
             ("[hooks]", ocf.HOOK_HELP, tuple(ocf.DEFAULT_POLICY["hooks"])),
             ("[section]", ocf.SECTION_HELP,
              tuple(name for name in ocf.SECTION_KEYS)),
-            ("[rule] field", ocf.RULE_FIELD_HELP + ocf.RULE_FIELD_HELP_OLDER, ocf.RULE_KEYS),
+            ("[rule] field", ocf.RULE_FIELD_HELP, ocf.RULE_KEYS),
+            # The computed flags belong here too. They are the one help table that is neither
+            # derived from its source nor covered by the reference check, so without this row a
+            # flag added to COMPUTED_FLAGS leaves the contract a line short and nothing fails.
+            ("computed", ocf.COMPUTED_HELP, ocf.COMPUTED_FLAGS),
     ):
         documented = {name for name, _ in help_table}
         assert documented == set(values), (
             "the documentation of %s and the engine disagree: documented but unread %s; read but "
             "undocumented %s"
             % (label, sorted(documented - set(values)), sorted(set(values) - documented)))
-    check_generated_region(ocf, policy, ocf.POLICY_REL, ocf.render_vocabulary(),
-                           (ocf.VOCAB_BEGIN, ocf.VOCAB_END), ocf.write_vocabulary,
+    check_generated_region(ocf, policy, ocf.generated(ocf.POLICY_REL),
                            "the vocabulary region is what documents the policy's interface")
 
 
@@ -888,8 +721,7 @@ def check_reference_region():
     rendered = ocf.render_reference(policy)
     assert "MISSING DESCRIPTION" not in rendered, (
         "the reference renders a gate with no description, so it would publish a placeholder")
-    check_generated_region(ocf, policy, ocf.REFERENCE_REL, rendered,
-                           (ocf.REFERENCE_BEGIN, ocf.REFERENCE_END), ocf.write_reference,
+    check_generated_region(ocf, policy, ocf.generated(ocf.REFERENCE_REL),
                            "the reference region is what makes the rules document true")
 
 
@@ -966,35 +798,6 @@ def test_hooks_wiring():
     check_hooks_wiring()
 
 
-def check_line_endings_are_normalised():
-    """A file written with CRLF must still compare equal to what this program would write.
-
-    The failure this guards is quiet and platform-specific: git's autocrlf hands out CRLF on Windows,
-    the program writes LF, and the comparison that decides "is this generated file already current"
-    then never matches. The visible symptom is a reload that always says it rewrote something, which
-    makes a real change indistinguishable from the checkout's line endings.
-    """
-    ocf = load_ocf_module()
-    root = build_root({"state": "executing"})
-    try:
-        policy, _ = ocf.load_policy(root)
-        target = os.path.join(root, ocf.HOOKS_REL)
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        rendered = ocf.render_hooks_json(policy)
-        with open(target, "w", encoding="utf-8", newline="") as handle:
-            handle.write(rendered.replace("\n", "\r\n"))
-        reported = ocf.write_hooks(root, policy)
-        assert "already matches" in reported, (
-            "a CRLF copy of the current wiring was treated as out of date, so the check that a "
-            "generated file is current cannot pass on Windows: %r" % reported)
-    finally:
-        shutil.rmtree(root, ignore_errors=True)
-
-
-def test_line_endings_are_normalised():
-    check_line_endings_are_normalised()
-
-
 def check_class_names_are_known():
     """Every class a rule names must be one the engine knows, and an unknown one must raise.
 
@@ -1010,9 +813,8 @@ def check_class_names_are_known():
     problems = []
     for rule in policy.get("rule", []):
         where = rule.get("id", "unnamed")
-        spelled = [name.strip() for name in str(rule.get("on", "")).split(",") if name.strip()]
-        spelled += [name.strip() for name
-                    in str((rule.get("if") or {}).get("class", "")).split(",") if name.strip()]
+        spelled = [name.strip() for name
+                   in str((rule.get("if") or {}).get("class", "")).split(",") if name.strip()]
         for name in spelled:
             if name not in known:
                 problems.append("rule %s names the class %r" % (where, name))
@@ -1023,7 +825,7 @@ def check_class_names_are_known():
         effective = "write"
         tool = "probe"
 
-        def surface(self, name):
+        def candidates(self):
             return []
 
     try:
@@ -1041,84 +843,169 @@ def test_class_names_are_known():
     check_class_names_are_known()
 
 
-def check_no_invented_spaces():
-    """Every space in the rendered contract must sit next to an ASCII character.
+def run_cli(root, *args):
+    """Run the real CLI against a throwaway root and return (exit code, stdout, stderr)."""
+    env = dict(os.environ)
+    env["OCF_ROOT"] = root
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.run([sys.executable, ENTRY] + list(args), stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, env=env, cwd=root)
+    return (proc.returncode, proc.stdout.decode("utf-8", "replace"),
+            proc.stderr.decode("utf-8", "replace"))
 
-    This is the invariant behind one_line, stated as a property of the whole document instead of as a
-    list of sentences to compare: Chinese is written without spaces, so a space between two Han
-    characters is always an artefact - produced by joining a wrapped line with a space, which happened
-    three separate times while this text was being written. Comparing specific sentences only catches
-    the sentences someone remembered to list; they also go stale the moment a human rewrites the rule,
-    which is exactly what a human is supposed to do.
+
+def check_human_only_vocabulary():
+    """Every human-only command name must appear in the rule that bans writing one into a script.
+
+    `human_only_call` builds its words from the command table, so it cannot drift. The
+    `self-authorization-write` rule holds the same vocabulary a second time, as a regex in the policy
+    file, and nothing compared them: renaming the protected-list commands would have left that rule
+    refusing `ocf.py deny x` in a script while allowing `ocf.py protect x`, with every test green.
     """
     ocf = load_ocf_module()
     policy, _ = ocf.load_policy(REPO)
-    offenders = []
-    for number, line in enumerate(ocf.render_instructions(policy).splitlines(), start=1):
-        for index, char in enumerate(line):
-            if char != " ":
-                continue
-            before = line[index - 1] if index else ""
-            after = line[index + 1] if index + 1 < len(line) else ""
-            if not (before.isascii() or after.isascii()):
-                offenders.append("line %d: %r" % (number, line[max(0, index - 12):index + 12]))
-    assert not offenders, (
-        "the rendered contract holds a space that is not next to an ASCII character, so a wrapped "
-        "line was joined with a space instead of being closed up: %s" % "; ".join(offenders[:3]))
+    names = sorted(set(word for group in ocf.TRANSITIONS["commands"]["human"] for word in group))
+    pattern = ""
+    for rule in policy.get("rule", []):
+        if rule.get("id") == "self-authorization-write":
+            pattern = str((rule.get("if") or {}).get("content_matches", ""))
+    assert pattern, ("the self-authorization-write rule is gone, so nothing bans writing a human-only "
+                     "command into an executable file")
+    missing = [name for name in names if name not in pattern]
+    assert not missing, ("the self-authorization-write pattern does not name %s, so writing that "
+                         "command into a script is not treated as self-authorization. Pattern: %r"
+                         % (", ".join(missing), pattern))
 
 
-def test_no_invented_spaces():
-    check_no_invented_spaces()
+def test_human_only_vocabulary():
+    check_human_only_vocabulary()
 
 
-def check_rule_text_is_flattened():
-    """A soft rule's text reaches the model as one line, with the spaces the human meant and no others.
+def install_into(target):
+    """Run the real install from this repository into a target directory. Returns (code, output)."""
+    code, out_text, err_text = run_cli(REPO, "install", target)
+    return code, (err_text or out_text)
 
-    This was wrong three times in a row, each time invisibly: joining every wrap on a space put one
-    inside a Chinese sentence, joining none of them ran Latin words into the Chinese beside them, and
-    dropping the whitespace after a break lost the space in front of an indented path. The terminal
-    could not be used to check any of it - its own line wrapping inserts spaces - so the rule is pinned
-    here as comparisons rather than looked at.
+
+def check_install_keeps_the_humans_files():
+    """A target that already has a policy or a protected list keeps it, and gets the shipped one beside it.
+
+    `policy.toml` is the human's program and `protected.txt` is the list that makes the install worth
+    doing. An installer that silently replaced either would be destroying the configuration it exists to
+    serve, and nothing would report it - the gate would simply start refusing different things.
     """
-    ocf = load_ocf_module()
-    cases = (
-        ("它是什么、在\n这里指什么", "它是什么、在这里指什么"),
-        ("先读\n  CONTEXT.md\n  和\n  docs/adr/\n：就这样", "先读 CONTEXT.md 和 docs/adr/：就这样"),
-        ("run\nthe command", "run the command"),
-        ("  补进\n  .orchestrator/glossary.md；", "补进 .orchestrator/glossary.md；"),
-        ("一句话定义 - 用法", "一句话定义 - 用法"),
-    )
-    for source, expected in cases:
-        got = ocf.one_line(source)
-        assert got == expected, ("one_line(%r) gave %r, expected %r. The text lands in front of the "
-                                 "model verbatim, so a wrong space here is a wrong instruction."
-                                 % (source, got, expected))
+    target = tempfile.mkdtemp(prefix="ocf-keep-")
+    note = "# the target's own note, added by hand\n"
+    problems = []
+    try:
+        os.makedirs(os.path.join(target, ".github", "ocf"))
+        with open(os.path.join(REPO, ".github", "ocf", "policy.toml"), "r", encoding="utf-8") as handle:
+            policy_text = handle.read()
+        with open(os.path.join(target, ".github", "ocf", "policy.toml"), "w", encoding="utf-8",
+                  newline="\n") as handle:
+            handle.write(policy_text + "\n" + note)
+        with open(os.path.join(target, ".github", "protected.txt"), "w", encoding="utf-8",
+                  newline="\n") as handle:
+            handle.write("# the target's own list\nsrc/**\n")
+        code, message = install_into(target)
+        if code != 0:
+            problems.append("install exited %d: %s" % (code, message.strip()[-300:]))
+        with open(os.path.join(target, ".github", "ocf", "policy.toml"), "r",
+                  encoding="utf-8") as handle:
+            installed = handle.read()
+        if note not in installed:
+            problems.append("install replaced the target's policy, which is the human's program")
+        if not os.path.exists(os.path.join(target, ".github", "ocf", "policy.toml.dist")):
+            problems.append("the target's policy differs but no .dist was left to compare against")
+        with open(os.path.join(target, ".github", "protected.txt"), "r", encoding="utf-8") as handle:
+            protected = handle.read()
+        if "src/**" not in protected:
+            problems.append("install overwrote the target's protected list: %r" % protected)
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
+    assert not problems, "; ".join(problems)
 
 
-def test_rule_text_is_flattened():
-    check_rule_text_is_flattened()
+def test_install_keeps_the_humans_files():
+    check_install_keeps_the_humans_files()
 
 
+def check_verify_catches_a_broken_install():
+    """`verify` has to fail when the installation is broken, or it is a green light nobody can trust.
+
+    Four ways this deployment breaks without anything looking wrong, each one checked here: the wiring
+    file is gone, it holds no events, it is not what the switches describe, and the contract the model
+    reads has drifted from the rules the gate enforces.
+    """
+    target = tempfile.mkdtemp(prefix="ocf-broken-")
+    hooks = os.path.join(target, ".github", "hooks", "orchestrator.json")
+    contract = os.path.join(target, ".github", "copilot-instructions.md")
+    problems = []
+    try:
+        code, message = install_into(target)
+        if code != 0:
+            problems.append("install exited %d: %s" % (code, message.strip()[-300:]))
+        with open(hooks, "r", encoding="utf-8") as handle:
+            good = handle.read()
+        with open(contract, "r", encoding="utf-8") as handle:
+            good_contract = handle.read()
+
+        def verify():
+            return run_cli(target, "verify")[0]
+
+        os.remove(hooks)
+        if verify() == 0:
+            problems.append("verify passed with no wiring file at all")
+        with open(hooks, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write('{"hooks": {}}\n')
+        if verify() == 0:
+            problems.append("verify passed with a wiring file holding no events")
+        with open(hooks, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(good)
+        with open(contract, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(good_contract.replace("# Work Control Flow", "# Something else entirely"))
+        if verify() == 0:
+            problems.append("verify passed while the contract the model reads had drifted from the "
+                            "rules the code renders")
+        with open(contract, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(good_contract)
+        if verify() != 0:
+            problems.append("verify failed on a target that installs cleanly, so it cannot be used as "
+                            "a green light")
+    finally:
+        shutil.rmtree(target, ignore_errors=True)
+    assert not problems, "; ".join(problems)
+
+
+def test_verify_catches_a_broken_install():
+    check_verify_catches_a_broken_install()
+
+
+# What a person who DEPLOYS this gate can break: their policy, their tool list, their rules, their
+# protected list, their templates, the prose they edit. Every check here answers a question they can act
+# on, in words they have a reason to know.
+#
+# The checks on the engine itself - the transition table, the gates table, the rule shape, the soft-rule
+# skip, line endings, rule text flattening, the human-only commands, installing, packaging, the prompt
+# log - are in `release/build/engine_checks.py` instead, which is not shipped because only someone
+# editing ocf.py can be bitten by them. They used to be here, and this file travels inside the payload,
+# so shipping them meant handing every user a list of ways THEY could not possibly have gone wrong.
 CHECKS = (
     ("repo-ascii", test_repo_is_ascii),
     ("plan-template", test_plan_template),
     ("policy-vocabulary", test_policy_vocabulary),
-    ("transition-table", test_transition_table),
-    ("gated-transitions", test_gated_transitions),
-    ("new-rule-shape", test_new_rule_shape),
-    ("soft-rules-never-gate", test_soft_rules_never_gate),
     ("hooks-wiring", test_hooks_wiring),
-    ("line-endings", test_line_endings_are_normalised),
-    ("rule-text-flattened", test_rule_text_is_flattened),
-    ("no-invented-spaces", test_no_invented_spaces),
     ("class-names-known", test_class_names_are_known),
+    ("human-only-vocabulary", test_human_only_vocabulary),
+    ("install-keeps-the-humans-files", test_install_keeps_the_humans_files),
+    ("verify-catches-a-broken-install", test_verify_catches_a_broken_install),
     ("generated-instructions", test_generated_instructions),
     ("vocabulary-region", test_vocabulary_region),
     ("reference-region", test_reference_region),
     ("markdown-links", test_markdown_links),
+    ("section-references", test_section_references),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),
-    ("prompt-instrumentation", test_prompt_instrumentation),
 )
 
 

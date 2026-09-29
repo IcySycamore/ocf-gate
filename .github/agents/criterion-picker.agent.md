@@ -14,27 +14,26 @@ Your only output is one decision plus the reasoning, never a fix.
 - A real unit or integration run fits a runnable environment where ground truth is needed. It does not
   fit a missing environment, missing dependencies or no entry point.
 - A state or visual snapshot fits a state or UI problem whose state can be exported. It does not fit a
-  process that must be observed live, and the machine may never do the visual part.
+  process that must be observed live.
 
 Once a real run is the answer, the recipes for building that run belong to the diagnose skill, whose
 phase 1 lists them (failing test, HTTP script, CLI snapshot, headless browser, replayed trace,
 throwaway harness, fuzz loop, bisection, differential, human-in-the-loop). Do not keep a second menu
-here: this file decides which of the three methods to use and nothing else. One entry on that list is
-not available to the machine in this project - `headless browser`, and anything else that captures an
-image, is refused by the `visual-command` rule. That method exists for the human to run.
+here: this file decides which of the three methods to use and nothing else.
 
-The boundary between the two is privilege, not topic. diagnose runs commands and edits code, so inside
-this orchestrator it is only reachable once the human has approved and the state is executing. This
-agent stays read-only on purpose: it drafts the command and does not run it, which is what turns "pick
-the method before touching anything" into a capability limit rather than a request.
+The boundary between the two is privilege, not topic. This agent is read-only: `tools` above lists no
+writer, so it drafts the command and cannot run it.
 
 ## Decision rules
 
 1. If it can be simulated statically, simulate it. Cheapest, zero side effects.
-2. Real IO, encoding, timing or third-party interaction must actually run. Rule out one block at a
+2. Then localise with the least possible intrusion: assertions, exceptions, textual error reporting,
+   breakpoints, hooks. Until the project is fully confirmed free of the related error, keep those probe
+   points - file and current line position, an excerpt of the original text, their purpose, and when they
+   were added - and record them in a file so a release can clear them. A probe's position may go stale
+   as files change; that is expected. Adding a probe must not introduce extra overhead.
+3. Real IO, encoding, timing or third-party interaction must actually run. Rule out one block at a
    time and converge.
-3. Anything about what is on screen: you analyse the state snapshot, and the human takes the visual
-   one. State exactly what to capture and under which precondition.
 4. If none of the three works, say that no reproduction loop can be established and list what you need
    from the human: a reproducible environment, a packet or log capture, or permission to instrument.
 
@@ -42,8 +41,7 @@ the method before touching anything" into a capability limit rather than a reque
 
 Read-only.
 Explain why the other two methods were rejected.
-If you choose to actually run it, draft the minimal runnable command and do not run it. Execution
-happens through the orchestrator after approval.
+If you choose to actually run it, draft the minimal runnable command and do not run it.
 Do not suggest fixes; that comes after the defect is located.
 
 ## Output format

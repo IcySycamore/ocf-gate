@@ -11,6 +11,19 @@
     "expect_rule": "default"
   },
   {
+    "id": "a-question-turn-can-hand-back-to-ready",
+    "why": "Regression guard for the return path of the new soft rule: after a turn that only asked a question the agent must be able to hand the machine back to ready. advance-target allows every target in the agent list, and a command that only runs the entry script is control-plane, so this is already allowed today. The case pins that it stays allowed; it does not test the new prose, which nothing can execute.",
+    "state": "asking",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": {
+        "command": "python .github/ocf/ocf.py advance ready \"question answered\""
+      }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
+  },
+  {
     "id": "reading-a-protected-file-is-not-modifying-it",
     "why": "The protected-list rule says nothing may MODIFY those paths. Judging every path a command mentions instead meant reading a human's file was refused, and after self-protection becomes unconditional it would also mean `python .github/ocf/ocf.py status` - which names the entry script on every call - could not run, leaving a gate nobody can read. This pins the distinction: the same path, read versus written.",
     "state": "executing",
@@ -78,6 +91,20 @@
     },
     "expect": "deny",
     "expect_rule": "visual-command"
+  },
+  {
+    "id": "mentioning-the-entry-script-is-not-self-authorization",
+    "why": "The self-authorization rule asks whether a human-only subcommand is being written into an executable file. Its pattern once allowed arbitrary text between the entry script's name and the verb, so a file that merely mentioned the entry script near an unrelated word beginning with `allow` was refused as self-authorization. The two words must be adjacent now.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "create_file",
+      "tool_input": {
+        "filePath": "src/notes.py",
+        "content": "# see .github/ocf/ocf.py for the allowed paths\n"
+      }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
   },
   {
     "id": "nested-content-self-authorization",
@@ -164,7 +191,7 @@
     "payload": {
       "tool_name": "run_in_terminal",
       "tool_input": {
-        "command": "Remove-Item docs/deny-list.md"
+        "command": "Remove-Item docs/protect-list.md"
       }
     },
     "expect": "allow",
@@ -172,12 +199,12 @@
   },
   {
     "id": "human-only-word-as-an-unrelated-argument-is-not-a-call",
-    "why": "Same fix, the other way round: the word is a search pattern, the entry script is never invoked. A rule keyed on the words alone would deny reading for the word deny.",
+    "why": "Same fix, the other way round: the word is a search pattern, the entry script is never invoked. A rule keyed on the words alone would deny reading for the word protect.",
     "state": "executing",
     "payload": {
       "tool_name": "run_in_terminal",
       "tool_input": {
-        "command": "Get-ChildItem .orchestrator | Select-String deny"
+        "command": "Get-ChildItem .orchestrator | Select-String protect"
       }
     },
     "expect": "allow",
@@ -190,7 +217,7 @@
     "payload": {
       "tool_name": "run_in_terminal",
       "tool_input": {
-        "command": "python .github/ocf/ocf.py status; python .github/ocf/ocf.py deny docs/**"
+        "command": "python .github/ocf/ocf.py status; python .github/ocf/ocf.py protect docs/**"
       }
     },
     "expect": "deny",
@@ -277,16 +304,16 @@
     "expect_rule": "self-protection-path"
   },
   {
-    "id": "switch-off-does-not-open-gate-code",
-    "why": "The maintenance window stops the approval rules, and that is all it stops. It used to open the orchestrator's own files too, which meant the switch that turns the gate down was also the key to rewriting it: turning it off disabled the rules that protect it. Self-protection is unconditional now, and this case is what says so.",
+    "id": "switch-off-opens-gate-code",
+    "why": "Every rule follows the master switch, self-protection included, so with the window open gate code is editable - which is what the window is for. What keeps that safe is that only a human can open it, not that the rule ignores the switch. With the switch ON the same write is refused, and self-protection-holds-while-acting is what pins that half.",
     "enabled": false,
     "state": "executing",
     "payload": {
       "tool_name": "create_file",
       "tool_input": { "filePath": ".github/ocf/ocf.py", "content": "# edit\n" }
     },
-    "expect": "deny",
-    "expect_rule": "self-protection-path"
+    "expect": "allow",
+    "expect_rule": "default"
   },
   {
     "id": "protected-path-blocked",
@@ -437,6 +464,42 @@
     "expect": "deny",
     "expect_rule": "protected-file",
     "expect_reason_contains": ["docs/notes.md"]
+  },
+  {
+    "id": "unread-write-target-is-refused",
+    "why": "Regression: this command and the readable one below are the same write. Both reached the path rules as an empty candidate list, so this one - the easier spelling to reach for - was allowed while the other was refused. Writing is now known from the command text, and a write whose target could not be read is refused instead of passing as touching nothing.",
+    "state": "executing",
+    "human_code": ["CONTEXT.md"],
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "Set-Content -Path $target -Value x" }
+    },
+    "expect": "deny",
+    "expect_rule": "unread-write-target"
+  },
+  {
+    "id": "readable-write-target-still-reaches-the-path-rules",
+    "why": "The third answer must not swallow the readable case. This is the same write with the target written out, so the protected-list rule names the file rather than the generic rule saying the target could not be read.",
+    "state": "executing",
+    "human_code": ["docs/**"],
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "Set-Content -Path docs/notes.md -Value x" }
+    },
+    "expect": "deny",
+    "expect_rule": "protected-file",
+    "expect_reason_contains": ["docs/notes.md"]
+  },
+  {
+    "id": "not-writing-is-not-an-unreadable-target",
+    "why": "The boundary on the other side: a command with no write verb in it answers `none`, not `unknown`, so the new rule stays out of the way and the environment rules decide.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "Get-Content CONTEXT.md" }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
   },
   {
     "id": "posttool-continuation-prompt-warned",

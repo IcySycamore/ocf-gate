@@ -1,99 +1,190 @@
-# OCF 策略配置指南
+# OCF Policy Configuration Guide
 
-- 字段与谓词词表 位于[`policy.toml`](.github/ocf/policy.toml) 里 `# OCF:VOCABULARY:BEGIN/END` 之间的区域 。
-- 工作流描述 位于[`.github/work-control-flow.md`](.github/work-control-flow.md) 里 `<!-- OCF:REFERENCE:BEGIN/END -->` 之间的区域
-- 每次提问时注入的引导词 位于[`.github/copilot-instructions.md`](.github/copilot-instructions.md)由 `reload` 生成。
+English | [中文](POLICY-GUIDE_CH.md)
 
 ---
 
-## 1. 三条铁律
+## 1. Rule format
 
-1. 按顺序解析，**首个命中即生效**
-2. 解析失败**不降级为"没有策略"**，而是落到最严兜底：除永远允许与只读工具外一律拒绝。
-3. 改配置要人类手工编辑；改完跑 `python .github/ocf/ocf.py reload`
+A rule is one `[[rule]]` block in `policy.toml`. It answers exactly one question: **under which conditions should this tool call get which verdict.**
 
----
+```toml
+[[rule]]
+id      = "no-prod-config"                    # every verdict carries this name, so a decision stays traceable
+enabled = "switch"                            # follows the maintenance window (the default)
+kind    = "hard"                              # hard: the hook gives a verdict; soft: written into the standing contract
+result  = "deny"                              # the verdict to give when it fires
+message = "Production config belongs to the human; hand it over when done."   # what the agent reads: say what to fix
+unless  = { computed = "control_plane" }      # optional; the shape to use when an exemption is genuinely needed
 
-## 2. 判定模型
-
-```text
-每个工具调用
-  → 分类（visual / env / exec / write / read / session / unknown；最严在前，同时列出时取更严的）
-  → 短路A：session  → allow
-  → 短路B：read    → allow
-  → 按顺序逐条 [[rule]]，首个命中即生效
-  → 短路C：exec 类、命令读不出来、且 `system.enabled` 为真 → deny（fail-safe）
-  → 短路D：未分类且名字像动作、且在需批准的状态 → [unknown_tool].action
-  → 都没有命中 → allow（[default]）
+[rule.if]
+class        = "write"                        # which class of tool this call belongs to
+path_matches = '^config/prod/'                # a condition this rule owns: a path regex, judged per path
 ```
 
-**规则命中时的结果**：`allow` / `ask` / `deny` / `require_approval`
+### Fields
 
-## 3. 规则
+| Field       | Required  | Meaning                                                                                                                                                                                    |
+| ----------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `id`        | yes       | Every verdict carries it. The tests assert these names, so **renaming one fails a test instead of drifting**                                                                               |
+| `enabled`   | no        | Three spellings, see below                                                                                                                                                                 |
+| `kind`      | no        | `hard` (default, the hook gives a verdict) or `soft` (`reload` writes it into the standing contract)                                                                                       |
+| `label`     | soft only | The short name a soft rule is listed under, in the generated contract and in the reference region                                                                                          |
+| `[rule.if]` | **yes**   | Every condition that must hold. Omitting this block **makes the engine raise** - reading it as "no conditions, so always true" would turn a malformed rule into one that denies every call |
+| `unless`    | no        | The exception. A condition table for a hard rule; a sentence the model applies for a soft rule                                                                                             |
+| `result`    | hard only | One of the four verdicts: `allow` / `ask` / `deny` / `require_approval`. A soft rule gives no verdict, so it does not use this key                                                         |
+| `else`      | no        | Soft only: the sentence injected while this rule is **off**. Absent means it says nothing when off                                                                                         |
+| `message`   | yes       | The sentence the agent reads: handed back inside a hard rule's verdict, or injected into the standing contract while a soft rule is on                                                     |
 
-| 字段      | 含义                                                                                                                           |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `enabled` | 是否启用                                                                                                                       |
-| `kind`    | `hard`：由 hook 保障功能。`soft`：无法被代码强制，由 `reload` 写进常驻引导词                                                   |
-| `if`      | 命中情景。硬规则写工具条件（`class` / `tool` / `command_matches` / `path_matches` / `fact`…）；软规则写 `occasion`（对话时机） |
-| `unless`  | 绕过情景                                                                                                                       |
-| `result`  | 规则逻辑。硬规则是`allow`/`ask`/`deny`/`require_approval`；软规则是注入内容                                                    |
-| `why`     | 规则描述：硬规则作为 hook 的返回 message 会直接展示给 agent，软规则会展示给人类                                                |
+### The values `enabled` accepts
 
-`surface` 仍然被旧形状接受，而现役策略里还有 3 条规则在用（两条自保护、一条自授权）——迁移完成前两者并存。
+| Spelling   | Meaning                   |
+| ---------- | ------------------------- |
+| `true`     | Always on                 |
+| `false`    | Always off                |
+| `"switch"` | Follows the master switch |
 
-加一条禁止，照这个形状写：
+### Conditions (the keys of `[rule.if]`)
+
+Each key is one condition; its value is what it compares against.
+
+| Condition                              | What it compares                                                                                              |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `class`                                | The tool class: `visual` / `env` / `exec` / `write` / `read` / `session` / `unknown`, or `any`                |
+| `state`                                | The current state: `ready` / `asking` / `planning` / `executing` / `reporting` / `blocked`                    |
+| `tool`                                 | The tool name as the editor reports it                                                                        |
+| `command_matches`                      | Regex against the command string                                                                              |
+| `command_length_over`                  | Ceiling on the command's length                                                                               |
+| `command_statements_over`              | Ceiling on the number of statements (**quotes are blanked first**, so a `;` inside quotes is not a statement) |
+| `command_repeats_at_least`             | How many times this exact command has already run                                                             |
+| `content_matches`                      | What would be written, plus the raw tool input                                                                |
+| `environment_declared`                 | Whether the human has declared the existing environment                                                       |
+| `approval`                             | `true` when approval still applies, i.e. the state is not an acting state                                     |
+| `computed`                             | A flag computed from the command, see below                                                                   |
+| `fact` with `is` / `is_not` / `is_set` | A fact recorded by the human or the hook: equals / does not equal / non-empty                                 |
+| `write_target_unread`                  | The call writes, but **where it writes could not be read**                                                    |
+| `path_matches`                         | The paths this call touches, **judged per path, never as a batch**                                            |
+| `touches_protected`                    | Whether each path this call would change is on the protected list, **judged per path**                        |
+
+### Flags (`computed`)
+
+| Flag              | True when                                                                                                                                      |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control_plane`   | **Every** statement invokes the entry script by its full relative path. Reading the state is not acting, so it must not be held up by approval |
+| `invokes_entry`   | At least one statement invokes the entry script                                                                                                |
+| `human_only_call` | The entry script is invoked with a **human-only subcommand** as its argument                                                                   |
+
+### The four values of `result`
+
+| Value              | Effect                                                                                                             |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `allow`            | Let it through                                                                                                     |
+| `ask`              | The editor asks the human once. **A pre-approval may swallow it**, so do not put anything that must hold behind it |
+| `deny`             | Refuse and say why. **Handled before any approval logic**, so nothing auto-approves past it                        |
+| `require_approval` | Refuse, and tell the model to have the human run `approve` in their own terminal                                   |
+
+---
+
+## 2. How a rule is hit
+
+```mermaid
+flowchart TD
+    A["One tool call, PreToolUse"] --> B["Read the payload<br/>tool name / command / content / touched paths"]
+    B --> C["Classify: strictest first<br/>visual → env → exec → write → read → session"]
+    C --> D{"class = session ?"}
+    D -- yes --> OK1["allow (session)"]
+    D -- no --> E{"class = read ?"}
+    E -- yes --> OK2["allow (read)"]
+    E -- no --> F["Walk the rule table in file order, first match wins. A rule fires when all of if holds and unless does not"]
+    F -- fires --> H["Take the verdict in result<br/>allow / ask / deny / require_approval"]
+    F -- nothing fired --> I{"class = exec<br/>and the command could not be parsed<br/>and system.enabled ?"}
+    I -- yes --> NO1["deny (unreadable-command)"]
+    I -- no --> J{"unclassified<br/>and the name matches the command heuristic<br/>and acting is not allowed in this state ?"}
+    J -- yes --> K["[unknown_tool].action"]
+    J -- no --> OK3["allow (default)"]
+```
+
+---
+
+## 3. How to configure
+
+Suppose you are the user of this system and you want one thing changed. **Locate it in this table first, then edit.**
+
+| What you want                          | Where to change it                                     | `reload`? | Window reload? |
+| -------------------------------------- | ------------------------------------------------------ | --------- | -------------- |
+| Add or change a gate rule              | `[[rule]]` in `policy.toml`                            | no        | no             |
+| Change a threshold                     | the number inside that rule                            | no        | no             |
+| Stop a tool being blocked              | the relevant list under `[tools]` (**no code change**) | no        | no             |
+| Reword a soft rule                     | that rule's `message` text                             | **yes**   | no             |
+| Turn a rule off                        | its own `enabled` line                                 | no        | no             |
+| Adjust overall strictness              | `[system] enabled`                                     | no        | no             |
+| Change which hook events are installed | the `[hooks]` switches                                 | **yes**   | **yes**        |
+| Add a self-check probe                 | `[selftest.canary]`                                    | no        | no             |
+
+> [!INFO]
+> A hard rule change takes effect immediately, but the documents do not follow.
+> Use `reload` to rebuild the hard-rule documentation and the soft-rule injected text.
+> Only `[hooks]` needs a window reload.
+
+### Recipe 1: add a prohibition
 
 ```toml
 [[rule]]
 id      = "no-prod-config"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "生产配置是人类的，改完交给他。"
-unless  = { computed = "control_plane" }      # 可省；这是唯一真需要豁免时的写法
+message = "Production config belongs to the human; hand it over when done."
 
 [rule.if]
-class        = "edit"
+class        = "write"
 path_matches = '^config/prod/'
 ```
 
-位置决定语义：要压过批准规则，放在 `approval-required-*` **之前**
+To beat an approval rule, put it **before** any `approval-required-*`.
 
-**加工具**：加进 `[tools]` 对应列表即可
+### Recipe 2: add a tool
 
-**加金丝雀（门禁状态验证）**：`[selftest.canary]` 里至少一条必须 deny、一条必须 allow，才能同时证明
-"该拦的还拦"和"该放的还放"。
+Add it to the matching list under `[tools]`.
 
-**改阈值**：改规则中对应键（如 `command_length_over = 400`。
-配置每次调用重读，改完立即生效；更改 **`.github/hooks/*.json` 需要重载窗口**。
+- A tool listed in two classes is judged by the **stricter** one (`visual` is first).
+- An unregistered tool that carries a command is judged as a command class; one that only carries a path falls to the command-class name heuristic.
+- If its payload field is not the default `command` / `code`, add a field path under `[tools.field]`.
 
----
+### Recipe 3: change a threshold
 
-## 4. 改完怎么验
+A threshold is **a number written inside the rule that uses it**, in that rule's `[rule.if]`. No `reload` needed.
 
-```powershell
-python .github\ocf\ocf.py selftest      # 分类输出：environment / policy / system / ok，非 ok 即退出码 1
-python .github\ocf\tests\run.py         # 38 条用例 + 18 条结构断言
-python .github\ocf\ocf.py gate all      # 逐条看状态门禁的通过情况
-python .github\ocf\ocf.py reload        # 人类专属：把配置重新生成进常驻契约与 hooks 接线
+### Recipe 4: turn a rule off
+
+Set that rule's `enabled` to `false`.
+
+### Recipe 5: add a soft rule
+
+```toml
+[[rule]]
+id      = "my-discipline"
+kind    = "soft"
+label   = "short name"
+enabled = "switch"
+message = """
+The sentence injected while it is ON."""
+else    = """
+The sentence injected while it is OFF. Optional."""
+
+[rule.if]
+occasion = "ask"
 ```
 
-自检的三个分类含义不同，**别混为一谈**：
+### Recipe 6: add a self-check probe
 
-- `[environment]`：Python、hooks 接线、状态目录 —— 环境问题，不是本系统的错
-- `[policy]`：策略文件本身的问题 —— 改这个文件
-- `[system]`：金丝雀未通过 —— **门禁不再执行策略**，最严重
-
-`generated-instructions` 与 `hooks-wiring` 两条断言比对"配置渲染出的内容"与"磁盘上的文件"，
-所以改了配置忘了 `reload` 会**失败**，而不是静默漂移。
+Add one under `[selftest.canary]`. A canary must go through the **real hook entry point**, or it does not prove the gate is alive. The whole set must contain **at least one that must deny and one that must allow**.
 
 ---
 
-## 5. 已知边界
+## 4. Related files and entries
 
-- 规则读的是**文本**，不是语义。它无法预知"引号不闭合会让 shell 挂住"，也无法判断一句话是不是
-  "有效答复"。这类事由 `PostToolUse` 事后发现（命令没有进展就注入警告），而不是事前拦截。
-- `write_target`、未知工具分类等依赖启发式，方向刻意偏向"多拦一次"。
-- 并不能拦下人类和 agent 通过编码恶意绕过门禁的行为。
-- 策略文件解析失败会拒绝一切变更。
-- 终端与编辑器工具的**折行**不可信
+- **Field and predicate vocabulary**: `.github/ocf/policy.toml`
+- **Gates, tool classes and the rule list**: `.github/work-control-flow.md`
+- **The standing guidance injected on every turn**: `.github/copilot-instructions.md`
+- **The structural check list**: `.github/ocf/tests/run.py`
+- **Project overview and the usage walkthrough**: [`README.md`](README.md)

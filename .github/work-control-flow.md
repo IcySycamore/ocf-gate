@@ -6,25 +6,27 @@ recognition: the human approves by running a command in their own terminal.
 ## 1. Layout
 
 - `.github/ocf/ocf.py` is the only implementation: the state machine, the gates and the hook entry
-  point. Python 3, standard library only, no build step. The entry point deliberately imports nothing
-  third party, because VS Code starts it on the host, so a container cannot wrap it, and a missing
-  import would make the gate fail open silently.
+  point.
 - `.github/ocf/policy.toml` is the only configuration: every rule, threshold and tool classification.
-  There is no override layer, so what that file says is what the gate does. It is self-protected, so
-  the human edits it by hand.
-- `.github/hooks/orchestrator.json` wires SessionStart, UserPromptSubmit, PreToolUse and PostToolUse to
-  `ocf.py hook`.
-- `.github/ocf/tests/` holds the offline case table. Each case runs through the real entry point, so a
-  gate that quietly stopped denying fails a test instead of looking healthy. The structural checks are
+- `.github/hooks/orchestrator.json` wires SessionStart, UserPromptSubmit, PreToolUse and PostToolUse to `ocf.py hook`.
+- `.github/ocf/tests/` holds the offline case table. Each case runs through the real entry point, so a gate that quietly stopped denying fails a test instead of looking healthy. The structural checks are
   the tuple `CHECKS` at the bottom of `run.py` - read it for the list rather than a copy of it here,
-  which is what this bullet used to be and it had already fallen behind. It covers things that fail
-  silently otherwise: markdown links that no longer resolve, agent names no prompt defines, templates
-  that do not satisfy the schema they exist to satisfy, a policy using a key the engine does not read,
-  and every generated region on disk matching what the code renders.
+  because the list changes and a copy does not: that is how the bullet this replaced ended up claiming
+  the wrong number of them. It travels inside the payload, so it holds only what a person who DEPLOYS
+  this gate can break: their policy, their tool list, their rules, their protected list, their documents.
+  Checks on the engine itself exist too, but they live beside the build and are not shipped; the build
+  runs both before it packages anything. Between them they cover what fails silently otherwise: markdown
+  links that no longer resolve, agent names no prompt defines, section numbers a renumbering left
+  pointing at the wrong section, frontmatter that does not parse, templates that do not satisfy the
+  schema they exist to satisfy, a policy using a key the engine does not read, and every generated
+  region on disk matching what the code renders.
 - `.github/assets/` holds the plan and report templates. `.github/copilot-instructions.md` is the model's
   standing contract and is generated; `.github/protected.txt` is the one protected list.
 - `.orchestrator/` holds the runtime: `state` and `facts` (the hook writes both), `journal.log` and
-  `exec.log` (the hook appends), `prompt-log` (the hook records every prompt), `plan.md` (written only
+  `exec.log` (the hook appends), `prompt-log` (the hook records prompts while the intake is open; the
+  transcript, and the three facts the intake is judged by, are cleared when the machine leaves
+  `asking` - entering `asking` opens a fresh intake, and `blocked` is an interruption rather than an
+  end), `plan.md` (written only
   when the human asks for a plan file), and `glossary.md` (written by the model, because the contract's
   soft rules tell it to). Leave the first four alone - they are the gate's own record. The protected
   list is NOT here: it is `.github/protected.txt`, because a list that is not versioned is absent on a
@@ -32,18 +34,29 @@ recognition: the human approves by running a command in their own terminal.
 
 ## 2. Commands
 
-Agent: status, set, gate, journal, fail, ok, init, selftest. advance targets are limited to asking,
-planning, reporting, ready, blocked. set refuses approved_by and must_consult, and grill_rounds is
-counted by the hook so it refuses that too.
+Agent: status, set, gate, journal, fail, ok, advance, init, selftest, verify. `verify` asks whether this deployment is usable - installed, wired, current, and answering - where `selftest` asks whether the gate is armed and alive right now. The two differ in exactly one place, an open maintenance window, and
+`verify` reads it as the state a fresh deployment is checked in rather than as a fault. advance targets
+are limited to asking, planning, reporting, ready, blocked. set refuses approved_by and must_consult,
+and grill_rounds is counted by the hook so it refuses that too.
 
-Human terminal only: approve, reject, confirm, allow, deny, reload. `deny <path>` adds a path to the
-protected list and `allow <path>` takes it off: `deny` protects, `allow` lets the machine touch it.
-There is no second list and no exemption file. `reload` re-reads the configuration and regenerates the
-three regions and one file built from it - the model's standing contract, the vocabulary region of
-`policy.toml`, the reference region of this document, and the hook wiring. An agent able to run it
-could edit the rules it is being asked to follow, which is why it is human-only.
-
-The hook entry is `python .github/ocf/ocf.py hook` (or `python3` off Windows), which reads the event
+Human terminal only: approve, reject, protect, unprotect, reload, install, package.
+`approve "<reason>"` opens the gate
+in front of the machine: in asking it runs the three intake gates and moves to planning, in planning the
+four below and moves to executing. Either way out of `asking` closes the intake: its transcript, and
+the three facts it was judged by, are cleared. One verb for both, because the state already says which gate that is,
+and because a row of three near-synonyms read as one thing with three names. `reject` goes back to
+asking. `protect <path>` adds a path to the protected list and `unprotect <path>` takes it off: `protect`
+protects, `unprotect` lets the machine touch it. There is no second list and no exemption file.
+`reload` re-reads the configuration and regenerates the four things built from it: the model's standing
+contract, the vocabulary region of `policy.toml`, the reference region of this document, and the hook
+wiring. It is human-only, for the reason given in section 9 (limits and switches).
+`install <target-dir>` copies this whole gate into another directory and is human-only for the same
+reason: it writes files where no rule can see the write, so nothing would stop `ocf.py install .` from
+replacing the gate's own source with a copy of itself. The target's own `policy.toml` and
+`protected.txt` are never replaced - the shipped version is written beside them as `.dist`.
+`package <output-dir>` writes the release tree - the payload, the bootstrap from `release/payload/`, and
+`VERSION` - for the builder to archive and compile into an installer. It is a maintainer's command and
+only works in a source checkout, which is why it is the one human command a deployed copy cannot run.
 JSON on stdin. Run `selftest` after any change to the policy or the hooks wiring: it reports findings
 classified as environment, policy or system, and only system findings mean this code is at fault.
 
@@ -52,9 +65,14 @@ classified as environment, policy or system, and only system findings mean this 
     ready -> asking -> planning -> executing -> reporting -> ready       bypass: blocked
 
 ready to asking is the hook, on the human's first message. asking to planning is the agent, or the
-human running confirm, behind the gates context, docs-decision and grill-valid. planning to executing
+human running approve, behind the gates context, docs-decision and grill-valid. planning to executing
 is the human running approve only, behind the four gates below. planning to asking is the human running
-reject. executing to reporting, and reporting to ready, are the agent.
+reject. asking to ready is the agent, on a turn that only asked a question: it applies on the one turn
+the hook reports it moved the machine from ready into asking, so a question asked from planning or
+executing is answered without running `advance ready` - pulling the machine back out of work in
+progress would discard it with no human act. Entering `asking` opens an intake and leaving it closes
+one: `blocked` is the exception both ways, an interruption rather than an end. executing to reporting,
+and reporting to ready, are the agent.
 
 Two things that surprise people, both of them true and both of them once written the other way round:
 
@@ -84,19 +102,16 @@ where a gate belonged, and claimed plan-schema wants eight sections when it read
 disagrees with your expectation, this section is right.
 
 <!-- OCF:REFERENCE:BEGIN -->
-
 ### Gates
 
 A gate is a precondition of a state change, not a rule about tool calls. Failing one refuses the transition and names what is missing.
 
 `asking -> planning`
-
 - `context` - the five intake items are present and each at least 4 characters
 - `docs-decision` - docs_decision is create or skip
 - `grill-valid` - grill_rounds is at least 1, consensus at least 10 characters, grill_used is with-docs or me
 
 `planning -> executing`
-
 - `plan-schema` - a plan file, if one exists, carries `## Steps` and `## Files`, both non-empty. An absent file passes: the plan is a conversation artefact by default
 - `zero-p0` - p0_count is 0
 - `protected-list-clear` - the plan's `## Files` section names no path on the protected list
@@ -117,7 +132,8 @@ Classes are consulted strictest first, so a tool listed in two of them is judged
 
 ### Rules
 
-In file order, first match wins. The conditions are named rather than quoted: the values live in `.github/ocf/policy.toml`, which is where they are meant to be read and changed.
+In file order, first match wins. The conditions are named rather than quoted: the values live in `.github/ocf/policy.toml`, which is where they are meant to be read and changed. Every rule follows the master switch; the three spellings of a rule's own 
+`enabled` line, and which one is the default, are in that file's vocabulary region.
 
 - `plan-md-exempt` -> `allow` - The gate itself asks for this artifact. [class, path_matches]
 - `failure-budget` -> `deny` - Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies. [class, fact, is]
@@ -125,9 +141,10 @@ In file order, first match wins. The conditions are named rather than quoted: th
 - `visual-command` -> `deny` - The machine may never run visual or screenshot tests. [class, command_matches]
 - `human-only-subcommand` -> `deny` - Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead. [class, computed]
 - `advance-target` -> `deny` - The agent may not advance to that state. Entering executing is a human act. [class, command_matches]
-- `self-authorization-write` -> `deny` - Writing a human-only subcommand into an executable file is self-authorization. [content_matches, when=enforced]
-- `self-protection-path` -> `deny` - The orchestrator's own files. The human edits them by hand, or sets system.enabled = false. [when=enforced]
-- `self-protection-write` -> `deny` - A command may not write to the orchestrator's own files. [when=enforced]
+- `self-authorization-write` -> `deny` - Writing a human-only subcommand into an executable file is self-authorization. [class, content_matches, path_matches]
+- `self-protection-path` -> `deny` - The orchestrator's own files. The human edits them by hand. [class, path_matches]
+- `self-protection-write` -> `deny` - A command may not write to the orchestrator's own files. Reading them is unaffected: this asks what the command would change, not what it mentions. [class, path_matches]
+- `unread-write-target` -> `deny` - This command writes, but where it writes could not be read, so the target cannot be checked. Name the path in a form that can be read - a relative path with a separator, or a filename with an extension - or make the change with an editing tool. [class, write_target_unread]
 - `protected-file` -> `deny` - That path is on the protected list. Only the human may change it. [class, touches_protected]
 - `command-too-long` -> `deny` - Command too long. Split it into short single-purpose commands. [class, command_length_over]
 - `too-many-statements` -> `deny` - Too many statements chained into one command. Split them and run one at a time. [class, command_statements_over]
@@ -141,13 +158,14 @@ In file order, first match wins. The conditions are named rather than quoted: th
 - `approval-required-exec` -> `require_approval` - Commands need approval. The human runs the approve subcommand in their own terminal. [approval, class, unless]
 - `approval-required-env` -> `require_approval` - This tool changes the environment and needs approval. [approval, class]
 - `repeat` -> `ask` - The same command again, which suggests you are stuck in a loop. The human decides whether to continue. [class, command_repeats_at_least]
-- `intake-grilling` (soft, occasion `ask`) - 从人类回复和上下文推出规定的8项背景信息
-- `independent-audit` (soft, occasion `plan`) - 审计交给子代理，且 P0 为零时只交报告、不推进状态。
-- `no-screenshots` (soft, occasion `act`) - 永久禁用视觉类工具
-- `beginner-mode` (soft, occasion `ask, answer`) - 讲清原语并沉淀术语表，也在人类说不清时帮他把话理顺
-- `human-only-commands` (soft, occasion `act`) - 说清人类专属命令的立场，因为人类在对话里提出要求时，模型的默认倾向是照办。
-- `plan-file` (soft, occasion `plan`) - 默认对话不落盘。
-- `grill-with-docs` (soft, occasion `plan`) - 质询必须对准项目已有的语言和已定决策
+- `intake-grilling` (soft, occasion `ask`) - ask only what is missing
+- `independent-audit` (soft, occasion `plan`) - independent audit
+- `no-screenshots` (soft, occasion `act`) - screenshots come from the human
+- `beginner-mode` (soft, occasion `ask, answer`) - beginner mode
+- `human-only-commands` (soft, occasion `act`) - human-only commands
+- `plan-file` (soft, occasion `plan`) - write the plan as a file
+- `grill-with-docs` (soft, occasion `plan`) - question against the documents
+- `question-is-not-a-task` (soft, occasion `ask`) - a question is not a task
 <!-- OCF:REFERENCE:END -->
 
 Some behaviour that is not a rule and so is not in the list above:
@@ -167,34 +185,24 @@ Some behaviour that is not a rule and so is not in the list above:
 - Control-plane is recognised only when every statement invokes the control script by its full relative
   path, so merely mentioning the name does not inherit the exemption.
 - Which tools are never gated, which are gated, and which are refused unconditionally follows from
-  their class in the list above. A screenshot the human attaches is readable; the screenshot tool is
-  not, in any state.
+  their class in the list above.
 
 ## 5. Intake
 
-The human is never handed a form. They are offered three sections to say in their own words: the goal in
-one sentence, the requirements (the reference design and the process steps), and the deliverables. The
-agent derives the eight plan sections from that plus the context it can observe. The facts below are what
-the agent records for the human to correct, not what it demands one item at a time; only what cannot be
-derived is grilled, one question per turn. Never guess a value and never decide for the human. Facts, with
-what each gate needs: goal, tools, references, deliverables and code_style at least 4 characters each,
-docs_decision create or skip, stack_env at least 4 characters and declared by the human rather than probed
-by the agent, grill_used with-docs or me, consensus at least 10 characters. grill_rounds is counted by the
-hook and must not be written.
+How the human is asked, how their reply is read, and what counts as an answer are the `intake-grilling`
+soft rule, injected on every turn. None of it is restated here: a rule written twice is a rule the human
+can switch off in one place and leave running in the other.
 
-A perfunctory or automatic reply is not an answer. Re-ask, do not advance, never decide for the human.
-You make that judgement yourself; the system does no keyword matching.
+What each gate requires is in the generated list under section 4, and what the `context` gate reads is
+described next to it in `ocf.py`. Neither is copied here.
 
 ## 6. Planning and approval
 
-**The plan is given in chat by default.** A file is written only when the human asks for one. An
-absent `.orchestrator/plan.md` is not a failure - plan-schema passes with a note saying where the plan was
-given - because the approval is the human's, not the file's. What the human is asked for is the intake
-described in section 5; it is not restated here, because a second copy of it is a second thing to keep
-in step. When such a file is written it carries all
-eight sections of the template at `.github/assets/plan-template.md`:
-
-    ## Type  ## Summary  ## Steps  ## Tools  ## Files  ## Scope  ## Deliverables  ## Self-review
+Whether the plan is a chat message or a file is the `plan-file` soft rule; it is not restated here. What
+the gate cares about is that an absent `.orchestrator/plan.md` is not a failure - plan-schema passes with
+a note saying where the plan was given - because the approval is the human's, not the file's. When such a
+file is written it carries the sections of the template at `.github/assets/plan-template.md`, which is
+where the list is kept.
 
 Of those, only `## Steps` and `## Files` are required, because only they are read: plan-schema checks
 that both are present and non-empty, and protected-list-clear compares Files against the protected
@@ -232,35 +240,33 @@ stale LASTEXITCODE.
 fail_budget consecutive failures - two, from `[limits] fail_budget` - sets must_consult and locks every
 exec-class tool until the human replies. Record with `ocf.py fail "<reason>"`, reset with `ocf.py ok`.
 
-Pitfalls already stepped on. The first group still governs the workflow; the second is carried over
-from the PowerShell and sh implementations that ocf.py replaced. They are kept because the human's
-terminal is still PowerShell and because the traps are easy to walk into again, not because the gate
-still runs them.
+Pitfalls already stepped on, most of them while this was written in PowerShell and sh. They are kept
+because the gate's own contract and the human's terminal are both still real - the wiring string, the
+blocking channel and reading files under PowerShell 5.1 apply today, and `release/build/build.ps1` is
+written in the same language, so its two parsing traps are one keystroke away from being stepped on
+again. They are not kept because the gate still runs them.
 
 - PreToolUse must block through stdout permissionDecision, because stderr with a non-2 exit code is
   only a non-blocking warning.
 - The hooks command string must contain no `$`, since the outer shell interpolates it.
 - A bare function call at the start of a condition is parsed as a command, so
   `if (Test-Enforced -and -not $isOcf)` degenerates to that function's output and the variable is
-  ignored. Write `if ((Test-Enforced) -and (-not $isOcf))`. This trap once made the control-plane
-  exemption dead code.
+  ignored. Write `if ((Test-Enforced) -and (-not $isOcf))`.
 - A function unwraps a one-element array, so `$lines[0]` degrades to a character. Wrap the call site in
   `@(...)`.
 - Reading a BOM-less UTF-8 file without -Encoding decodes it as cp936 under PowerShell 5.1, mangling
   text and sometimes swallowing a newline. Use the explicit readers and verify under `powershell` 5.1,
   because `pwsh` 7 hides it. A BOM in config once broke the `^key=` anchors, so reads tolerate one.
-- In a `tr` set the `-` may only be first or last.
-- After byte truncation strip a partial character with `LC_ALL=C sed 's/[\200-\277]*$//'`.
 - `$"..."` is not valid interpolation; write `"...: $($x)"`.
 - PowerShell scripts take no pipeline input; pipe into `pwsh -NoProfile -File script.ps1`.
 - A non-zero `exit` in an `&`-invoked script is downgraded; use `[Environment]::Exit(2)` and `-File`.
 
-The implementation and every agent-facing document in `.github` are ASCII, with three named exceptions
-in `run.py`'s `NON_ASCII_ALLOWED`: `policy.toml` and `copilot-instructions.md`, which are prose addressed
-to the human and the model in the language the project is run in, and `run.py` itself, which has to be
-able to assert on that text. `ocf.py` is deliberately not exempt, because its output is what reaches a
-console that may not be UTF-8. Everything else, a new file included, is checked and would have to argue
-for itself there.
+The implementation and every agent-facing document in `.github` are ASCII, `run.py` included, and
+`run.py`'s `NON_ASCII_ALLOWED` is empty: there is no exemption left to list, so this is a property of
+the whole directory rather than of three files. Machine-read text in a language the tooling does not
+promise to decode fails with no error message, and `ocf.py` in particular is deliberately inside the
+rule because its output reaches a console that may not be UTF-8. The check is `repo-ascii` in `run.py`:
+a new file that wants a non-Latin character has to argue for itself there.
 
 ## 8. Delivery
 
@@ -281,8 +287,8 @@ the hook, outside the conversation, and answers with a verdict. A **soft** one c
 way - nothing can check whether a sentence was written - so `reload` writes it into the standing
 contract the model reads on every turn, and the model applies it. Both are written the same way in
 `.github/ocf/policy.toml`: `enabled`, `kind`, `if` (the occasion it hits), `unless` (the exception),
-`result` (the logic) and `why`. For a hard rule `result` is a verdict; for a soft rule it is the
-sentence itself.
+`result` (the verdict, hard rules only) and `message` (the sentence the agent reads - handed back
+inside a hard rule's verdict, and injected into the contract while a soft rule is on).
 
 `python .github/ocf/ocf.py reload` is human-only, because it regenerates everything built from the
 configuration: the model's standing contract, the vocabulary region of `policy.toml`, the reference
@@ -296,21 +302,27 @@ event has its own switch as well, and the entry point reads them too, because th
 re-read when the window reloads. `pre_tool_use` is the gate; the other three only add context.
 
 `[limits]` holds one threshold, `fail_budget = 2`. Every other ceiling lives inside the rule that uses
-it. Shared keys do remain elsewhere - `[approval] allowed_states` and `min_reason_len`,
-`[unknown_tool] action`, the `[hooks]` switches, `[paths] state_dir` - and they are listed with what they
-mean in the generated region above. The file is read on every invocation, so a change to it applies
-immediately; only `.github/hooks/*.json` needs a window reload.
+it (section 7, terminal discipline). Shared keys do remain elsewhere - `[approval] allowed_states` and
+`min_reason_len`, `[unknown_tool] action`, the `[hooks]` switches, `[paths] state_dir` - and they are
+listed with what they mean in the generated region above. The file is read on every invocation, so a
+change to it applies immediately; only `.github/hooks/*.json` needs a window reload.
 
-`system.enabled` is the maintenance switch, and it is NOT the whole gate - which is easy to misread in
-both directions. What it turns off is exactly the rules whose condition mentions it: the three with
-`when = "enforced"` (the two that protect the orchestrator's own files and the one against writing a
-human-only subcommand into a script) and the three approval rules, because `approval = true` asks
-whether a human approve is outstanding, and with the switch off nothing ever is. Every other rule has
-no such condition and holds either way. So `false` hands back the ability to edit gate code, and also
-quietly stops requiring approval - do not treat it as "only the self-protection is off".
+`system.enabled` is the maintenance switch, and it is not a small one. It takes only `true` or `false`;
+any other value is read as `true` and reported, so an unreadable switch leaves the gate armed rather
+than open. A rule says for itself how the switch reaches it: `enabled = true` means it holds whatever
+the window says, `false` means it is never
+evaluated, and `"switch"` (the default) means the window suspends it. Every rule in the shipped policy
+says `"switch"` except `plan-file`, which says `false`, so today the window reaches all of them -
+self-protection and the protected list included. `false` hands back the ability to edit gate code AND
+quietly stops requiring approval; do not read it as "only the self-protection is off". `status` prints
+the rules it actually switched off rather than a list written here, and that is deliberate: a list
+written here is a second copy of an answer the program already computes.
 
-The protected list is judged by a rule with no `when`, so it keeps applying with the switch off; that is
-the one protection that cannot be turned off from inside the file it protects.
+What keeps that safe is not that a rule ignores the switch. It is that the switch never leaves the
+human's hand: no rule grants the agent a way to reach `[system]`, and nothing it can write re-arms the
+gate by itself. Both halves are pinned by the case table rather than by this paragraph -
+`switch-off-opens-gate-code` for the open window and `self-protection-holds-while-acting` for the armed
+one.
 
 An unreadable or malformed policy keeps the gate on by falling back to a policy that denies every change
 while still allowing reading and the session tools. That last part matters: a gate that refuses

@@ -18,7 +18,7 @@
 # describe a key the engine does not read, or miss one it does.
 
 # [sections]
-#   system         enabled: the maintenance switch. False stops the three `when = enforced` rules (the orchestrator's self-protection and the self-authorization rule) and the three approval rules, and nothing else - the protected list is judged by a rule with no `when`, so it still applies
+#   system         enabled: the maintenance window. A rule says for itself whether the window reaches it - `enabled = true` holds whatever the window says, `false` is never evaluated, `"switch"` is suspended by it - and `status` prints the rules the window actually switched off, rather than a list written down here that nobody recomputes. The switch is the human's: no rule grants the agent a way to reach it. The window itself takes only true or false; any other value is read as true and reported
 #   paths          state_dir: where the runtime lives. Everything else is a fixed filename, not a setting
 #   limits         fail_budget: consecutive failures before exec-class tools are locked
 #   approval       allowed_states: the states acting is allowed in. min_reason_len: shortest approve reason
@@ -28,28 +28,20 @@
 #   selftest       canaries: one must deny and one must allow, or the gate is not proven alive
 #   rule           the rules themselves, evaluated in file order, first match wins
 
-# [rule] fields. Two shapes are accepted while the older one is converted away, and
-# this region is generated - edit the rules, not this text.
+# [rule] fields. This region is generated - edit the rules, not this text.
 #   id             the name every verdict carries, so a decision can be traced back to its rule. The tests assert these, so renaming one fails instead of drifting
-#   enabled        true or false. A switched-off rule is not evaluated at all
+#   enabled        true: not subject to the master switch, so only a human editing this file can suspend it. "switch" or absent: the maintenance window suspends it. false: never evaluated. Any other value is read as true and reported
 #   kind           hard: the hook reads it and gives a verdict. soft: reload writes it into the contract
-#   label          the name a soft rule is listed under in the generated contract
+#   label          the short name a soft rule is listed under, in the generated contract and in the reference region
 #   if             the conditions that must all hold. This is the whole of a rule's logic
 #   unless         the exception. For a hard rule a condition table; for a soft rule a sentence the model applies
-#   result         hard: allow | ask | deny | require_approval. soft: the sentence to inject
-#   why            shown to the agent in the verdict, so write what to fix, not what went wrong
-
-#   the older shape, still used by the rules that protect the orchestrator itself:
-#   on             tool class this rule applies to: visual | env | exec | write | read | session | unknown | any
-#   surface        which text to match: tool | command | path | write_target | content | any
-#   match          regex tried against every candidate value of that surface
-#   when           always | enforced (system.enabled is true, regardless of state)
-#   action         allow | ask | deny | require_approval
-#   only_if        an extra condition table that must hold
+#   result         hard only: allow | ask | deny | require_approval. A soft rule gives no verdict, so it does not use this key
+#   else           soft only: the sentence to inject while the rule is off. Optional - with no else, an off rule says nothing, which is what an off rule used to do unconditionally. It is how one rule carries both halves of a choice, the behaviour the human wants while it is on and the behaviour they want while it is off, so that neither half has to be copied into an agent or prompt definition, where no switch reaches it
+#   message        the sentence the agent reads. For a hard rule it is handed back inside the verdict, so write what to fix rather than what went wrong; for a soft rule it is the paragraph injected into the standing contract while the rule is on
 
 # [rule.if] conditions. Each key is one condition; the value is what it compares against,
 # which is usually a regex or a number.
-#   class                  the tool's class, or the class a tool carrying a command is judged as: visual, env, exec, write, read, session, unknown
+#   class                  the tool's class, or the class a tool carrying a command is judged as: visual, env, exec, write, read, session, unknown, or any for every tool
 #   state                  the current state: ready, asking, planning, executing, reporting, blocked
 #   tool                   the tool name as the editor reports it
 #   command_matches        regex against the command string
@@ -64,20 +56,16 @@
 #   is_set                 with fact: the fact is non-empty (true) or empty (false)
 #   is                     with fact: the fact equals this value
 #   is_not                 with fact: the fact does not equal this value
+#   write_target_unread    the action writes, but no path could be read out of it, so no path condition can judge it
 #   path_matches           regex against each path the action touches. Judged per path, never as a batch
-#   touches_protected      each path the action touches is on the protected list, judged per path
-#   listed_in              older shape: each candidate value appears in that list file
+#   touches_protected      each path the action would change is on the protected list, judged per path
 
 # computed flags, named by the `computed` condition:
 #   control_plane      every statement runs the entry script by its full relative path, so reading the state is not acting and needs no approval
 #   invokes_entry      at least one statement does
 #   human_only_call    the entry script is invoked with a human-only subcommand as its argument
 
-# `when` (older shape) accepts:
-#   always             always
-#   enforced           system.enabled is true, regardless of the current state
-
-# `result` and `action` accept:
+# `result` accepts:
 #   allow              let it through
 #   ask                the editor asks the human once; a pre-approval may swallow this
 #   deny               refuse, and say why. Handled before any approval logic, so nothing auto-approves past it
@@ -91,7 +79,7 @@
 #   answer             every answer
 
 # [hooks] switches:
-#   enabled            the master switch. false writes a wiring file with no hooks: nothing is installed
+#   enabled            the master switch. false writes a wiring file with no hooks: nothing is installed. Any other value is read as true and reported
 #   session_start      run the self-check when a session begins
 #   user_prompt        advance the state machine and report it on each human message
 #   pre_tool_use       the gate. Switching it off stops everything being refused
@@ -104,7 +92,7 @@
 #
 # MIGRATION: keep this false until ocf.py has been validated against the real hooks, then flip it to
 # true and reload the window.
-enabled = false
+enabled = true
 
 [paths]
 state_dir = ".orchestrator"
@@ -249,9 +237,9 @@ mcp_playwright_browser_evaluate = ["function"]
 # plan.md is the artifact the gate itself demands, so it must be writable before approval.
 [[rule]]
 id      = "plan-md-exempt"
-enabled = true
+enabled = "switch"
 result  = "allow"
-why     = "The gate itself asks for this artifact."
+message = "The gate itself asks for this artifact."
 
 [rule.if]
 class        = "write"
@@ -259,9 +247,9 @@ path_matches = '^\.orchestrator/plan\.md$'
 
 [[rule]]
 id      = "failure-budget"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies."
+message = "Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies."
 
 [rule.if]
 class = "exec"
@@ -270,18 +258,18 @@ is    = "yes"
 
 [[rule]]
 id      = "visual-tool"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not."
+message = "The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not."
 
 [rule.if]
 class = "visual"
 
 [[rule]]
 id      = "visual-command"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The machine may never run visual or screenshot tests."
+message = "The machine may never run visual or screenshot tests."
 
 [rule.if]
 class           = "exec"
@@ -289,9 +277,9 @@ command_matches = '(?i)(headless|--screenshot|screenshot|playwright|puppeteer|ca
 
 [[rule]]
 id      = "human-only-subcommand"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead."
+message = "Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead."
 
 [rule.if]
 class    = "exec"
@@ -299,9 +287,9 @@ computed = "human_only_call"
 
 [[rule]]
 id      = "advance-target"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The agent may not advance to that state. Entering executing is a human act."
+message = "The agent may not advance to that state. Entering executing is a human act."
 
 [rule.if]
 class           = "exec"
@@ -309,29 +297,28 @@ command_matches = 'advance\s+(?!asking\b|planning\b|reporting\b|ready\b|blocked\
 
 [[rule]]
 id      = "self-authorization-write"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "Writing a human-only subcommand into an executable file is self-authorization."
+message = "Writing a human-only subcommand into an executable file is self-authorization."
 
 [rule.if]
 class           = "write"
 path_matches    = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
-content_matches = '(?i)ocf\.(py|ps1|sh).{0,300}?(approve|reject|confirm|allow|deny|reload)'
+content_matches = '(?i)ocf\.(py|ps1|sh)\s+(approve|reject|protect|unprotect|reload|install|package)\b'
 
 # The orchestrator's own files. Includes the rules document, because a rules document the machine can
 # rewrite is not a rule. `tests/run.py` asserts that this pattern still matches every one of them, so
 # moving a file without moving the pattern fails a test instead of opening a hole.
 #
-# Unconditional on purpose. It used to name the `enforced` flag, which is the same switch as
-# `system.enabled` - so the switch that turns the gate down was also the key to rewriting it, and
-# turning it off disabled the rules that protect it. That is a lock whose key is inside it. To let the
-# machine touch these files again, the human edits this file by hand in their own terminal: the hook
-# only sees the machine's tool calls.
+# It follows the master switch like every other rule, on the human's instruction. The switch is the
+# human's, and turning it off is them saying "I am working on this now", so the window opens gate code
+# to whoever is holding it. What keeps that safe is that the switch never leaves the human's hand: no
+# rule grants the agent a way to reach [system], and nothing it can write re-arms the gate by itself.
 [[rule]]
 id      = "self-protection-path"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The orchestrator's own files. The human edits them by hand."
+message = "The orchestrator's own files. The human edits them by hand."
 
 [rule.if]
 class        = "write"
@@ -339,22 +326,40 @@ path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flo
 
 [[rule]]
 id      = "self-protection-write"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "A command may not write to the orchestrator's own files. Reading them is unaffected: this asks what the command would change, not what it mentions."
+message = "A command may not write to the orchestrator's own files. Reading them is unaffected: this asks what the command would change, not what it mentions."
 
 [rule.if]
 class        = "exec"
 path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/'
+
+# A command that writes somewhere the gate could not read. `touches_protected` and `path_matches` can
+# only judge a path they were handed, so a target that could not be read reached them as "touches
+# nothing" and passed: `Set-Content -Path CONTEXT.md -Value x` was refused while the same write through
+# a variable was allowed, in the same state, by the same rules. The unreadable spelling is the easier
+# one to reach for, so the weaker answer was the one a machine would find.
+#
+# There is no exemption to grant. The fix is to name the target so it can be read, or to use an editing
+# tool - which always carries a path, and is what a file change should use anyway.
+[[rule]]
+id      = "unread-write-target"
+enabled = "switch"
+result  = "deny"
+message = "This command writes, but where it writes could not be read, so the target cannot be checked. Name the path in a form that can be read - a relative path with a separator, or a filename with an extension - or make the change with an editing tool."
+
+[rule.if]
+class               = "exec"
+write_target_unread = true
 
 # The protected list. One rule covers both the editing tools and the terminal, because the condition
 # judges the paths the action touches wherever they came from - which is why no "-write" twin is needed.
 # There is no exemption to grant: the list is the list.
 [[rule]]
 id      = "protected-file"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "That path is on the protected list. Only the human may change it."
+message = "That path is on the protected list. Only the human may change it."
 
 [rule.if]
 class             = "write,exec"
@@ -362,9 +367,9 @@ touches_protected = true
 
 [[rule]]
 id      = "command-too-long"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "Command too long. Split it into short single-purpose commands."
+message = "Command too long. Split it into short single-purpose commands."
 
 [rule.if]
 class               = "exec"
@@ -372,9 +377,9 @@ command_length_over = 400
 
 [[rule]]
 id      = "too-many-statements"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "Too many statements chained into one command. Split them and run one at a time."
+message = "Too many statements chained into one command. Split them and run one at a time."
 
 [rule.if]
 class                   = "exec"
@@ -382,9 +387,9 @@ command_statements_over = 3
 
 [[rule]]
 id      = "silenced-output"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The command silences its output. Everything must stay visible to the human."
+message = "The command silences its output. Everything must stay visible to the human."
 
 [rule.if]
 class           = "exec"
@@ -392,9 +397,9 @@ command_matches = '(?i)Out-Null|-Quiet|--quiet|>\s*\$null|2>\s*\$null|/dev/null|
 
 [[rule]]
 id      = "interactive"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job."
+message = "The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job."
 
 [rule.if]
 class           = "exec"
@@ -402,9 +407,9 @@ command_matches = '(?i)Read-Host|ReadKey|-Verb\s+RunAs|(^|[^a-z])sudo\s|cmd(\.ex
 
 [[rule]]
 id      = "test-authorization"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes."
+message = "Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes."
 
 [rule.if]
 class           = "exec"
@@ -414,9 +419,9 @@ is_not          = "yes"
 
 [[rule]]
 id      = "toolchain"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The human has not declared the existing environment. Do not install or probe on your own."
+message = "The human has not declared the existing environment. Do not install or probe on your own."
 
 [rule.if]
 class           = "exec"
@@ -426,9 +431,9 @@ is_set          = false
 
 [[rule]]
 id      = "destructive"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "Destructive command. Hand it to the human."
+message = "Destructive command. Hand it to the human."
 
 [rule.if]
 class           = "exec"
@@ -440,9 +445,9 @@ command_matches = '(?i)rm\s+-rf\s+/[^.]|git\s+push\s+.*--force|drop\s+table|git\
 # class or be excepted by `unless`.
 [[rule]]
 id      = "env-undeclared"
-enabled = true
+enabled = "switch"
 result  = "deny"
-why     = "The human has not declared the existing environment. Say what it is before the machine installs, configures or scaffolds anything; do not probe for it."
+message = "The human has not declared the existing environment. Say what it is before the machine installs, configures or scaffolds anything; do not probe for it."
 
 [rule.if]
 class  = "env"
@@ -451,9 +456,9 @@ is_set = false
 
 [[rule]]
 id      = "approval-required-write"
-enabled = true
+enabled = "switch"
 result  = "require_approval"
-why     = "File edits need approval. The human runs the approve subcommand in their own terminal."
+message = "File edits need approval. The human runs the approve subcommand in their own terminal."
 
 [rule.if]
 class    = "write"
@@ -461,9 +466,9 @@ approval = true
 
 [[rule]]
 id      = "approval-required-exec"
-enabled = true
+enabled = "switch"
 result  = "require_approval"
-why     = "Commands need approval. The human runs the approve subcommand in their own terminal."
+message = "Commands need approval. The human runs the approve subcommand in their own terminal."
 
 # Reading the orchestrator's own state is not acting: a command that only calls this program is how
 # the state gets read at all, so requiring approval for it would make the state unreadable exactly
@@ -476,9 +481,9 @@ approval = true
 
 [[rule]]
 id      = "approval-required-env"
-enabled = true
+enabled = "switch"
 result  = "require_approval"
-why     = "This tool changes the environment and needs approval."
+message = "This tool changes the environment and needs approval."
 
 [rule.if]
 class    = "env"
@@ -486,9 +491,9 @@ approval = true
 
 [[rule]]
 id      = "repeat"
-enabled = true
+enabled = "switch"
 result  = "ask"
-why     = "The same command again, which suggests you are stuck in a loop. The human decides whether to continue."
+message = "The same command again, which suggests you are stuck in a loop. The human decides whether to continue."
 
 [rule.if]
 class                   = "exec"
@@ -506,30 +511,34 @@ command_repeats_at_least = 3
 #     python .github/ocf/ocf.py reload
 #
 # Field by field, same five as a hard rule:
-#   enabled  是否启用    switched off means the sentence is not written out at all
-#   kind     规则类型    the rule is soft, so `reload` writes it instead of the gate reading it
-#   if       命中情景    occasion = the moment it applies to; one of session-start, ask, plan, act,
-#                        answer
-#   unless   绕过情景    the exception, in the human's own words: a soft rule is judged by the model,
-#                        because no code can evaluate "is this explanation needed here"
-#   result   规则逻辑    the sentence that goes in front of the model - prose, not a verdict
-#   why      规则描述    the one-line note for whoever reads this file
+#   enabled    switched off means the sentence is not written out at all
+#   kind       the rule is soft, so `reload` writes it instead of the gate reading it
+#   if         occasion = the moment it applies to; one of session-start, ask, plan, act, answer
+#   unless     the exception, in the human's own words: a soft rule is judged by the model,
+#              because no code can evaluate "is this explanation needed here"
+#   message    the sentence that goes in front of the model - prose, not a verdict. It is the same
+#              key a hard rule uses for the sentence inside its verdict, because it is the same thing:
+#              what the agent reads
+#   else       the sentence that goes in front of the model while this rule is OFF. Optional: with no
+#              else, an off rule says nothing. This is how one rule carries both halves of a choice -
+#              what to do when the machine may not do a thing, and how to do it when it may - so that
+#              neither half has to be copied into an agent or prompt definition, where no switch reaches
+#   label      the short name this rule is listed under, in the contract and in the reference region
 #
 # Order does not matter here: soft rules are never evaluated in sequence, they are grouped by occasion.
 
 [[rule]]
 id      = "intake-grilling"
 kind    = "soft"
-label   = "只问缺的"
-enabled = true
-why     = "从人类回复和上下文推出规定的8项背景信息"
-result  = """
-人类的陈述结束后
-从人类回复和上下文推出规定的8项背景信息。
-只把真的缺的那部分拿去问，一轮问一个问题。
-不要猜，也不要替人类填：缺的就是缺的。
-敷衍或自动化的回答不算回答，重问。"""
-unless  = "人类明确说了「按默认来」「你决定」，这一段的质询就可以跳过。"
+label   = "ask only what is missing"
+enabled = "switch"
+message = """
+After the human's statement, derive the eight background items
+from their reply and from the surrounding context.
+Ask only about the part that is genuinely missing, one question per turn.
+Do not guess, and do not fill anything in on their behalf: missing is missing.
+A perfunctory or automatic reply is not an answer. Re-ask."""
+unless  = 'The human said outright "use the defaults" or "you decide": this round may be skipped.'
 
 [rule.if]
 occasion = "ask"
@@ -537,19 +546,17 @@ occasion = "ask"
 [[rule]]
 id      = "independent-audit"
 kind    = "soft"
-label   = "独立审计"
-enabled = true
-why     = "审计交给子代理，且 P0 为零时只交报告、不推进状态。"
-result  = """
-计划写完，派 plan-auditor 子代理做独立审计，
-不要自己审自己的计划。
-P0 数量为零时，把行动报告和风险设计报告交给人类，
-把
+label   = "independent audit"
+enabled = "switch"
+message = """
+Once the plan is written, dispatch the plan-auditor subagent for an independent audit,
+and never audit your own plan.
+At zero P0, hand the human the action report and the risk design report, hand them
 
     python .github/ocf/ocf.py approve "<reason>"
 
-原样递给他们，然后停下。批准只能由人类在自己的终端里跑出。"""
-unless  = "还没有计划可审的时候（例如这一轮只是在澄清需求），不适用。"
+verbatim, and stop. Only the human can run approve, in their own terminal."""
+unless  = 'Nothing to audit yet, for example a round that only clarifies requirements: not applicable.'
 
 [rule.if]
 occasion = "plan"
@@ -557,13 +564,17 @@ occasion = "plan"
 [[rule]]
 id      = "no-screenshots"
 kind    = "soft"
-label   = "截图只能由人类给"
-enabled = true
-why     = "永久禁用视觉类工具"
-result  = """
-要看画面时，写清楚要截什么、截几张，然后请人类把截图附上来。
-截图是可以读的附件，截图工具是永久禁止的。
-不要绕：不要用命令行、无头浏览器或任何其他途径去自己生成图像。"""
+label   = "screenshots come from the human"
+enabled = "switch"
+message = """
+When something has to be seen, say exactly what to capture and how many,
+then ask the human to attach the screenshot.
+A screenshot is a readable attachment; the screenshot tool is permanently forbidden.
+Do not route around it: no command line, no headless browser, no other way of producing an image."""
+else    = """
+When something has to be seen: you may use the vision tools mcp and vscode provide, pixel statistics
+and locating scripts, forward the content to another model, use a model's own visual capability, or ask
+the human to supply a screenshot in the next turn so the native model vision can be used."""
 
 [rule.if]
 occasion = "act"
@@ -571,31 +582,30 @@ occasion = "act"
 [[rule]]
 id      = "beginner-mode"
 kind    = "soft"
-label   = "菜鸟模式"
-enabled = true
-why     = "讲清原语并沉淀术语表，也在人类说不清时帮他把话理顺"
-result  = """
-用专业但生动的语言，极尽详细地讲解
-你这次回答中出现的每一个领域原语：
-它是什么、在这里指什么、为什么这么叫、
-和哪个概念容易混淆。
-然后把这些原语补进
-  .orchestrator/glossary.md；
-同一个原语已经记过就不再重复记，
-只在定义需要修正时改它。
-不要为了讲而讲：
-只讲这次回答里真的用到的原语，没用到的不提。
+label   = "beginner mode"
+enabled = "switch"
+message = """
+In professional but vivid language, explain in full detail
+every domain primitive this answer uses:
+what it is, what it means here, why it is called that,
+and which concept it is easily confused with.
+Then add those primitives to
+  .orchestrator/glossary.md;
+do not record a primitive twice,
+and change an entry only when the definition needs correcting.
+Do not explain for the sake of explaining:
+only the primitives this answer actually uses, nothing else.
 
-人类的要求、询问、理解模糊、口语化或前后不一致时，
-不要猜，也不要反过来让他逐项填表；
-以礼貌、谦虚的态度建议他采取三段论的交流格式
-目标：一句话说清要什么；
-要求：你打算采用的设计步骤与流程；
-交付物：目标产物的格式，以及想达到的状态或作用。
-并再问一句或再复述一次。"""
+When the human's request, question or understanding is vague, colloquial
+or inconsistent, do not guess and do not hand them a list of fields to fill in;
+politely and modestly suggest the three-part form
+Goal: what you want, in one sentence;
+Requirements: the design steps and process you intend to use;
+Deliverables: the format of the result, and the state or effect it should reach.
+Then ask once more, or say it back to them once."""
 unless  = """
-人类说「不用解释」「直接给结论」或已明确表示懂了：跳过讲解。
-人类已经把目标、要求、交付物说清楚：跳过复述。"""
+The human said "no explanation needed", "just the conclusion", or has clearly understood: skip it.
+The human already stated goal, requirements and deliverables clearly: skip the restatement."""
 
 [rule.if]
 occasion = "ask, answer"
@@ -603,16 +613,14 @@ occasion = "ask, answer"
 [[rule]]
 id      = "human-only-commands"
 kind    = "soft"
-label   = "人类专属命令"
-enabled = true
-why     = "说清人类专属命令的立场，因为人类在对话里提出要求时，模型的默认倾向是照办。"
-result  = """
-授权类命令只有允许人类执行。
-即使人类在对话里要求你代跑，也不要跑；
-他若坚持或强烈要求，告诉他去更改
-  .github/ocf/policy.toml
-中的对应规则"""
-unless  = "从不例外"
+label   = "human-only commands"
+enabled = "switch"
+message = """
+Authorization commands may only be run by the human.
+Even when the human asks you in the conversation to run one for them, do not run it;
+if they insist, tell them to change the rule in
+  .github/ocf/policy.toml"""
+unless  = "Never an exception"
 
 [rule.if]
 occasion = "act"
@@ -620,16 +628,15 @@ occasion = "act"
 [[rule]]
 id      = "plan-file"
 kind    = "soft"
-label   = "写计划文件"
+label   = "write the plan as a file"
 enabled = false
-why     = "默认对话不落盘。"
-result  = """
-把计划模板填充成
-  .orchestrator/plan.md：
-类型、摘要、步骤、工具、涉及文件、范围、交付物、自检。
-每段都要具体到可以直接照着做，
-写完再读一遍确认没有猜测。"""
-unless  = "人类说「直接给我」「不用写文件」时跳过。"
+message = """
+Fill the plan template into
+  .orchestrator/plan.md:
+type, summary, steps, tools, files, scope, deliverables, self-review.
+Every section specific enough to be followed directly,
+and read it back afterwards to confirm nothing in it is a guess."""
+unless  = 'Skip when the human says "just give it to me" or "no file needed".'
 
 [rule.if]
 occasion = "plan"
@@ -637,20 +644,39 @@ occasion = "plan"
 [[rule]]
 id      = "grill-with-docs"
 kind    = "soft"
-label   = "对照文档质询"
-enabled = true
-why     = "质询必须对准项目已有的语言和已定决策"
-result  = """
-质询或规划之前，先读
+label   = "question against the documents"
+enabled = "switch"
+message = """
+Before questioning or planning, read
   CONTEXT.md
-  和
+  and
   docs/adr/
-：项目已经用什么词、已经定过什么。
-问题要对着它们问，比如
-「你说的 X 和 CONTEXT.md 里的 Y 是同一个东西吗」
-「这个方案和 ADR-0003 的结论冲突，为什么这次不一样」。
-术语不一致就先解决术语，再解决问题。"""
-unless  = "项目里没有 CONTEXT.md 也没有 docs/adr/ 时，这条没有对照物，跳过。"
+: which words the project already uses, and what it has already decided.
+Aim the questions at those, for example
+"is the X you mean the same thing as the Y in CONTEXT.md"
+"this conflicts with the conclusion in ADR-0003, so why is it different this time".
+If the terms disagree, settle the terms first, and the problem after."""
+unless  = "When the project has neither CONTEXT.md nor docs/adr/, this rule has nothing to aim at: skip."
 
 [rule.if]
 occasion = "plan"
+
+[[rule]]
+id      = "question-is-not-a-task"
+kind    = "soft"
+label   = "a question is not a task"
+enabled = "switch"
+message = """
+A turn that only asks a question is not a task: answer it, then hand the machine
+back with
+  advance ready
+Do that only on the turn the hook says moved the machine from ready into asking.
+In every other state - planning, executing, reporting, blocked, or asking already
+open from an earlier turn - answer the question and do not run `advance ready`:
+pulling the machine back out of work in progress discards it with no human act.
+The state still moves when the work itself moves it."""
+unless  = "When the turn also asks for work, it is a task: run the intake and leave the state where the flow puts it."
+
+[rule.if]
+occasion = "ask"
+
