@@ -101,7 +101,9 @@ stateDiagram-v2
 > [!NOTE]
 >
 > - 当 agent 认为或系统事实上发生阻塞时，将从任意状态转移至 `blocked`；当 agent 认为阻塞解决时，将离开。
-> - 您可以根据自己的需要修改状态机。⚠️ 更复杂的状态机以及更多的子 agent 身份，可能带来过大的时间和成本开销，且模型注意力分散，可能使效果不如设计预期。
+
+> [!CAUTION]
+> - 您可以根据自己的需要修改状态机。但更复杂的状态机以及更多的子 agent 身份，可能带来过大的时间和成本开销，且模型注意力分散，可能使效果不如设计预期。
 
 ---
 
@@ -364,7 +366,7 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 
 ### 卸载
 
-删掉 `.github/hooks/` 与 `.orchestrator/` 即停止强制。
+删掉 `.github/hooks/` 与 `.orchestrator/` 即强制停止。
 
 ### 日常操作与检验
 
@@ -420,10 +422,12 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 | 怎么我的 agent 还是笨                  | 请确认对话开始时和当前的 agent 都选择了`Work Orchestrator`                                                           |
 | hook 报错说命令里$f 变空               | 命令串被外层 shell 插值。去掉所有 $                                                                                  |
 
-其余限制见 `.github/work-control-flow.md` 的 _Known limitations_ 一节。
+其余限制见 `.github/work-control-flow.md` 的 _Known limitations_ 一节
 
-> [!INFO]
-> 以及……
+---
+
+> [!NOTE]
+> 以及
 > 一定一定要对 agent 有耐心，不要因为 agent 的"愚蠢"就发火而降低了自己的 prompt 质量。
 > 当您的 agent 正在工作时，请时刻关注其工作内容和进展——以便及时刹车或纠正。
 > 毕竟 AI agent 只是一个工具 Orz
@@ -454,6 +458,7 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 ---
 
 <div align="center">
+  
 **⭐ 如果这个项目对你有帮助，欢迎 Star 支持 ⭐**
 
 <sub>Made with ❤️ for better human–agent collaboration</sub>
