@@ -51,7 +51,7 @@ path_matches = '^config/prod/'                # 本条规则独有的条件：�
 | 条件                                 | 比较对象                                                                                     |
 | ------------------------------------ | -------------------------------------------------------------------------------------------- |
 | `class`                              | 触发工具分类：`visual` / `env` / `exec` / `write` / `read` / `session` / `unknown`，或 `any` |
-| `state`                              | 触发状态：`ready` / `asking` / `planning` / `executing` / `reporting` / `blocked`            |
+| `occasion`                           | 规则触发场合。硬规则可取状态：`ready` / `asking` / `planning` / `executing` / `reporting` / `blocked`；软规则自然语言描述时机：`session-start` / `ask` / `plan` / `act` / `answer`|
 | `tool`                               | 编辑器报告的工具名                                                                           |
 | `command_matches`                    | 命令串的正则                                                                                 |
 | `command_length_over`                | 命令长度上限                                                                                 |
@@ -177,10 +177,10 @@ occasion = "ask"
 
 在 `[selftest.canary]` 里加一条。金丝雀必须**走真实 hook 入口**，否则它证明不了门禁还活着。整套至少要有**一条必须 deny、一条必须 allow**
 
-## 4.关联文件与条目
+## 4. 关联文件与条目
 
 - **字段与谓词词表**：`.github/ocf/policy.toml`
 - **门禁、工具分类与规则清单**：`.github/work-control-flow.md`
 - **每次提问注入的常驻引导词**：`.github/copilot-instructions.md`
 - **结构断言清单**：`.github/ocf/tests/run.py`
-- **项目总览与使用流程**：[`README.md`](README.md)
+- **项目总览与使用流程**：[`README_CH.md`](README_CH.md)

@@ -5,9 +5,8 @@ __pycache__/
 # The release output: a payload tree and the artifacts built from it, both reproducible from source.
 dist/
 
-# Deliberately NOT ignored, unlike a typical project:
-#   .orchestrator/          the runtime record - state, facts, journal, exec log. It is committed, which
-#                           is what keeps the audit and the state alive across a clone.
-#   .github/protected.txt   a list that is not versioned is simply absent on a fresh clone, and every
-#                           rule that reads it still looks correct.
+# .orchestrator/ is runtime state (state, facts, journal, exec log): produced by running this gate,
+# not part of its source, so a clone does not carry one machine's history.
+# .github/protected.txt is the opposite and has no line below, because a list a clone does not have is a
+# list every rule still reads as if it were present.
 .orchestrator/

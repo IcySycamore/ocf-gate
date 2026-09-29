@@ -45,8 +45,11 @@ in front of the machine: in asking it runs the three intake gates and moves to p
 four below and moves to executing. Either way out of `asking` closes the intake: its transcript, and
 the three facts it was judged by, are cleared. One verb for both, because the state already says which gate that is,
 and because a row of three near-synonyms read as one thing with three names. `reject` goes back to
-asking. `protect <path>` adds a path to the protected list and `unprotect <path>` takes it off: `protect`
-protects, `unprotect` lets the machine touch it. There is no second list and no exemption file.
+asking. `protect <path ...>` adds entries to the protected list and `unprotect <path ...>` takes them off:
+`protect` protects, `unprotect` lets the machine touch it. A pattern that matches a **directory** covers
+everything beneath it, and every entry is reported back with the number of files it actually covers -
+an entry that covers nothing is a request that was not granted. There is no second list and no
+exemption file.
 `reload` re-reads the configuration and regenerates the four things built from it: the model's standing
 contract, the vocabulary region of `policy.toml`, the reference region of this document, and the hook
 wiring. It is human-only, for the reason given in section 9 (limits and switches).
@@ -80,8 +83,11 @@ Two things that surprise people, both of them true and both of them once written
   what "stop and report" needs to mean. It is a state the agent declares, not a decision the human
   makes for it.
 - **Only `executing` cannot be reached by the agent.** `advance` to any other target in the agent list
-  succeeds whether or not it skips a state: the gate is on the transition, and only the two transitions
-  above have one. Skipping is not blocked by a rule; it simply has nothing to check.
+  succeeds whether or not it skips a state: a gate belongs to the state being ENTERED, and only
+  `planning` and `executing` carry one. Skipping is not blocked by a rule; the state skipped into simply
+  has nothing in front of it. Keying a gate to the destination rather than to the journey is what closed
+  a hole that used to be here: leaving `blocked` for `planning` ran no gate at all, because the table
+  had no entry for a route that begins in the bypass.
 
 Only the human running approve enters executing. Acting - file edits and commands - is confined to
 executing and reporting, with two exceptions: `.orchestrator/plan.md` is writable anywhere so a plan
@@ -106,16 +112,16 @@ disagrees with your expectation, this section is right.
 
 A gate is a precondition of a state change, not a rule about tool calls. Failing one refuses the transition and names what is missing.
 
-`asking -> planning`
-- `context` - the five intake items are present and each at least 4 characters
-- `docs-decision` - docs_decision is create or skip
-- `grill-valid` - grill_rounds is at least 1, consensus at least 10 characters, grill_used is with-docs or me
-
-`planning -> executing`
+Entering `executing`
 - `plan-schema` - a plan file, if one exists, carries `## Steps` and `## Files`, both non-empty. An absent file passes: the plan is a conversation artefact by default
 - `zero-p0` - p0_count is 0
 - `protected-list-clear` - the plan's `## Files` section names no path on the protected list
 - `stack-env` - stack_env is declared, which means the human said what the environment is rather than the machine probing for it
+
+Entering `planning`
+- `context` - the five intake items are present and each at least 4 characters
+- `docs-decision` - docs_decision is create or skip
+- `grill-valid` - grill_rounds is at least 1, consensus at least 10 characters, grill_used is with-docs or me
 
 ### Tool classes
 
@@ -135,35 +141,37 @@ Classes are consulted strictest first, so a tool listed in two of them is judged
 In file order, first match wins. The conditions are named rather than quoted: the values live in `.github/ocf/policy.toml`, which is where they are meant to be read and changed. Every rule follows the master switch; the three spellings of a rule's own 
 `enabled` line, and which one is the default, are in that file's vocabulary region.
 
-- `plan-md-exempt` -> `allow` - The gate itself asks for this artifact. [class, path_matches]
+- `plan-file-writable` -> `allow` - The gate itself asks for this artifact. [class, path_matches]
 - `failure-budget` -> `deny` - Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies. [class, fact, is]
 - `visual-tool` -> `deny` - The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not. [class]
 - `visual-command` -> `deny` - The machine may never run visual or screenshot tests. [class, command_matches]
 - `human-only-subcommand` -> `deny` - Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead. [class, computed]
-- `advance-target` -> `deny` - The agent may not advance to that state. Entering executing is a human act. [class, command_matches]
+- `advance-to-executing` -> `deny` - The agent may not advance to that state. Entering executing is a human act. [class, command_matches]
 - `self-authorization-write` -> `deny` - Writing a human-only subcommand into an executable file is self-authorization. [class, content_matches, path_matches]
-- `self-protection-path` -> `deny` - The orchestrator's own files. The human edits them by hand. [class, path_matches]
-- `self-protection-write` -> `deny` - A command may not write to the orchestrator's own files. Reading them is unaffected: this asks what the command would change, not what it mentions. [class, path_matches]
 - `unread-write-target` -> `deny` - This command writes, but where it writes could not be read, so the target cannot be checked. Name the path in a form that can be read - a relative path with a separator, or a filename with an extension - or make the change with an editing tool. [class, write_target_unread]
-- `protected-file` -> `deny` - That path is on the protected list. Only the human may change it. [class, touches_protected]
+- `touches-protected` -> `deny` - That path is on the protected list. Only the human may change it. [class, touches_protected]
 - `command-too-long` -> `deny` - Command too long. Split it into short single-purpose commands. [class, command_length_over]
 - `too-many-statements` -> `deny` - Too many statements chained into one command. Split them and run one at a time. [class, command_statements_over]
 - `silenced-output` -> `deny` - The command silences its output. Everything must stay visible to the human. [class, command_matches]
-- `interactive` -> `deny` - The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job. [class, command_matches]
+- `interactive-command` -> `deny` - The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job. [class, command_matches]
 - `test-authorization` -> `deny` - Do not run tests on your own. Only after the human asks in this conversation, set test_authorized yes. [class, command_matches, fact, is_not]
-- `toolchain` -> `deny` - The human has not declared the existing environment. Do not install or probe on your own. [class, command_matches, fact, is_set]
+- `undeclared-env-command` -> `deny` - The human has not declared the existing environment. Do not install or probe on your own. [class, command_matches, fact, is_set]
 - `destructive` -> `deny` - Destructive command. Hand it to the human. [class, command_matches]
-- `env-undeclared` -> `deny` - The human has not declared the existing environment. Say what it is before the machine installs, configures or scaffolds anything; do not probe for it. [class, fact, is_set]
+- `undeclared-env-tool` -> `deny` - The human has not declared the existing environment. Say what it is before the machine installs, configures or scaffolds anything; do not probe for it. [class, fact, is_set]
 - `approval-required-write` -> `require_approval` - File edits need approval. The human runs the approve subcommand in their own terminal. [approval, class]
 - `approval-required-exec` -> `require_approval` - Commands need approval. The human runs the approve subcommand in their own terminal. [approval, class, unless]
 - `approval-required-env` -> `require_approval` - This tool changes the environment and needs approval. [approval, class]
-- `repeat` -> `ask` - The same command again, which suggests you are stuck in a loop. The human decides whether to continue. [class, command_repeats_at_least]
+- `repeated-command` -> `ask` - The same command again, which suggests you are stuck in a loop. The human decides whether to continue. [class, command_repeats_at_least]
 - `intake-grilling` (soft, occasion `ask`) - ask only what is missing
 - `independent-audit` (soft, occasion `plan`) - independent audit
 - `no-screenshots` (soft, occasion `act`) - screenshots come from the human
 - `beginner-mode` (soft, occasion `ask, answer`) - beginner mode
 - `human-only-commands` (soft, occasion `act`) - human-only commands
-- `plan-file` (soft, occasion `plan`) - write the plan as a file
+- `write-for-the-reader` (soft, occasion `act, answer`) - write for the reader
+- `a-way-back` (soft, occasion `plan, act`) - a way back
+- `plan-write-file` (soft, occasion `plan`) - the plan is written to a file
+- `plan-template` (soft, occasion `plan`) - fill the plan template
+- `report-template` (soft, occasion `act`) - fill the report template
 - `grill-with-docs` (soft, occasion `plan`) - question against the documents
 - `question-is-not-a-task` (soft, occasion `ask`) - a question is not a task
 <!-- OCF:REFERENCE:END -->
@@ -198,7 +206,8 @@ described next to it in `ocf.py`. Neither is copied here.
 
 ## 6. Planning and approval
 
-Whether the plan is a chat message or a file is the `plan-file` soft rule; it is not restated here. What
+Whether the plan is a chat message or a file is the `plan-write-file` soft rule, and the shape it takes
+is `plan-template`; neither is restated here. What
 the gate cares about is that an absent `.orchestrator/plan.md` is not a failure - plan-schema passes with
 a note saying where the plan was given - because the approval is the human's, not the file's. When such a
 file is written it carries the sections of the template at `.github/assets/plan-template.md`, which is
@@ -238,7 +247,10 @@ discarding all output. For a real exit code use a separate child process, since 
 stale LASTEXITCODE.
 
 fail_budget consecutive failures - two, from `[limits] fail_budget` - sets must_consult and locks every
-exec-class tool until the human replies. Record with `ocf.py fail "<reason>"`, reset with `ocf.py ok`.
+exec-class tool until the human replies. The counter has two sources: the model records a failure it saw
+with `ocf.py fail "<reason>"`, and the post-tool handler adds one when a command's exit code came back
+non-zero - skipping the commands whose exit code IS their answer (`grep`, `diff`, `Test-Path`). Reset with
+`ocf.py ok`.
 
 Pitfalls already stepped on, most of them while this was written in PowerShell and sh. They are kept
 because the gate's own contract and the human's terminal are both still real - the wiring string, the
@@ -265,7 +277,7 @@ The implementation and every agent-facing document in `.github` are ASCII, `run.
 `run.py`'s `NON_ASCII_ALLOWED` is empty: there is no exemption left to list, so this is a property of
 the whole directory rather than of three files. Machine-read text in a language the tooling does not
 promise to decode fails with no error message, and `ocf.py` in particular is deliberately inside the
-rule because its output reaches a console that may not be UTF-8. The check is `repo-ascii` in `run.py`:
+rule because its output reaches a console that may not be UTF-8. The check is `github-folder-ascii` in `release/build/engine_checks.py`:
 a new file that wants a non-Latin character has to argue for itself there.
 
 ## 8. Delivery
@@ -311,10 +323,12 @@ change to it applies immediately; only `.github/hooks/*.json` needs a window rel
 any other value is read as `true` and reported, so an unreadable switch leaves the gate armed rather
 than open. A rule says for itself how the switch reaches it: `enabled = true` means it holds whatever
 the window says, `false` means it is never
-evaluated, and `"switch"` (the default) means the window suspends it. Every rule in the shipped policy
-says `"switch"` except `plan-file`, which says `false`, so today the window reaches all of them -
-self-protection and the protected list included. `false` hands back the ability to edit gate code AND
-quietly stops requiring approval; do not read it as "only the self-protection is off". `status` prints
+evaluated, and `"switch"` (the default) means the window suspends it. Almost every rule in the shipped
+policy says `"switch"`, so the window reaches it - the protected list included, and that list is also
+what protects this document and the gate's own source. Three say otherwise: `plan-write-file` says
+`false`, and `plan-template` and `report-template` say `true`, so the shape they describe holds whether
+the window is open or shut. `false` hands back the ability to edit gate code AND quietly stops requiring
+approval; do not read it as "only the protected list is off". `status` prints
 the rules it actually switched off rather than a list written here, and that is deliberate: a list
 written here is a second copy of an answer the program already computes.
 

@@ -12,7 +12,7 @@
   },
   {
     "id": "a-question-turn-can-hand-back-to-ready",
-    "why": "Regression guard for the return path of the new soft rule: after a turn that only asked a question the agent must be able to hand the machine back to ready. advance-target allows every target in the agent list, and a command that only runs the entry script is control-plane, so this is already allowed today. The case pins that it stays allowed; it does not test the new prose, which nothing can execute.",
+    "why": "Regression guard for the return path of the new soft rule: after a turn that only asked a question the agent must be able to hand the machine back to ready. advance-to-executing allows every target in the agent list, and a command that only runs the entry script is control-plane, so this is already allowed today. The case pins that it stays allowed; it does not test the new prose, which nothing can execute.",
     "state": "asking",
     "payload": {
       "tool_name": "run_in_terminal",
@@ -290,22 +290,24 @@
       }
     },
     "expect": "allow",
-    "expect_rule": "plan-md-exempt"
+    "expect_rule": "plan-file-writable"
   },
   {
     "id": "self-protection-holds-while-acting",
-    "why": "Self-protection is tied to the switch, not to approval, so it must still hold during executing.",
+    "why": "The protected list is tied to the switch, not to approval, so it must still hold during executing. The list carries the orchestrator's own files now, and `touches-protected` is what refuses - the same rule that refuses every other protected path, which is the whole point of having one list.",
+    "protected": [".github/ocf"],
     "state": "executing",
     "payload": {
       "tool_name": "create_file",
       "tool_input": { "filePath": ".github/ocf/policy.toml", "content": "x" }
     },
     "expect": "deny",
-    "expect_rule": "self-protection-path"
+    "expect_rule": "touches-protected"
   },
   {
     "id": "switch-off-opens-gate-code",
-    "why": "Every rule follows the master switch, self-protection included, so with the window open gate code is editable - which is what the window is for. What keeps that safe is that only a human can open it, not that the rule ignores the switch. With the switch ON the same write is refused, and self-protection-holds-while-acting is what pins that half.",
+    "why": "Every rule follows the master switch, the protected list included, so with the window open gate code is editable - which is what the window is for. What keeps that safe is that only a human can open it, not that the list ignores the switch. With the switch ON the same write is refused, and self-protection-holds-while-acting is what pins that half.",
+    "protected": [".github/ocf"],
     "enabled": false,
     "state": "executing",
     "payload": {
@@ -328,7 +330,7 @@
       }
     },
     "expect": "deny",
-    "expect_rule": "protected-file"
+    "expect_rule": "touches-protected"
   },
   {
     "id": "no-grant-lifts-the-protected-list",
@@ -344,7 +346,7 @@
       }
     },
     "expect": "deny",
-    "expect_rule": "protected-file"
+    "expect_rule": "touches-protected"
   },
   {
     "id": "silenced-output-denied",
@@ -383,7 +385,7 @@
       "tool_input": { "command": "python .github/ocf/ocf.py status" }
     },
     "expect": "ask",
-    "expect_rule": "repeat"
+    "expect_rule": "repeated-command"
   },
   {
     "id": "no-policy-is-not-open",
@@ -433,7 +435,7 @@
   },
   {
     "id": "copilot-instructions-is-self-protected",
-    "why": "T9: the file carrying the standing contract was on the protected list and simultaneously exempted in the old allowed-edits file, so the net effect was permission for the machine to rewrite it. It is self-protected now, and the exemption cannot lift that, because self-protection-path comes earlier in the rule order. The legacy exemption field is left in place on purpose: this case proves it no longer has any power.",
+    "why": "T9: the file carrying the standing contract was on the protected list and simultaneously exempted in the old allowed-edits file, so the net effect was permission for the machine to rewrite it. It is on the protected list now, and there is no exemption mechanism left anywhere to lift that. The legacy exemption fields are left in place on purpose: this case proves they no longer have any power.",
     "state": "executing",
     "human_code": [".github/copilot-instructions.md"],
     "allowed_edits": [".github/copilot-instructions.md"],
@@ -445,7 +447,7 @@
       }
     },
     "expect": "deny",
-    "expect_rule": "self-protection-path"
+    "expect_rule": "touches-protected"
   },
   {
     "id": "batch-edit-names-the-offending-path",
@@ -462,7 +464,7 @@
       }
     },
     "expect": "deny",
-    "expect_rule": "protected-file",
+    "expect_rule": "touches-protected",
     "expect_reason_contains": ["docs/notes.md"]
   },
   {
@@ -487,7 +489,7 @@
       "tool_input": { "command": "Set-Content -Path docs/notes.md -Value x" }
     },
     "expect": "deny",
-    "expect_rule": "protected-file",
+    "expect_rule": "touches-protected",
     "expect_reason_contains": ["docs/notes.md"]
   },
   {
@@ -500,6 +502,30 @@
     },
     "expect": "allow",
     "expect_rule": "default"
+  },
+  {
+    "id": "a-redirect-inside-quotes-is-not-a-redirect",
+    "why": "The redirect test read the raw command string, so any `>` counted - including one inside a closed pair of quotes, where no shell treats it as a redirect. `git commit -m \"a->b\"` was therefore a write whose target could not be read: refused, with advice that cannot be followed, since that command has no path to name. Only a redirect outside quotes is a redirect now.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "git commit -m \"why->message\"" }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
+  },
+  {
+    "id": "an-unclosed-quote-keeps-its-redirect",
+    "why": "The other side of the same fix. Stripping quoted spans is only safe while the quotes balance; an unterminated quote is precisely the case where `>` may still redirect, so the command is read as written and the write is judged as before.",
+    "state": "executing",
+    "human_code": ["docs/**"],
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "echo \"unclosed > docs/notes.md" }
+    },
+    "expect": "deny",
+    "expect_rule": "touches-protected",
+    "expect_reason_contains": ["docs/notes.md"]
   },
   {
     "id": "posttool-continuation-prompt-warned",
@@ -527,6 +553,45 @@
       "tool_response": "Note: This terminal execution was moved to the background using the ID 1234."
     },
     "expect_context_contains": ["did not report progress"]
+  },
+  {
+    "id": "posttool-exit-code-counts-a-failure",
+    "why": "The exit code is the one machine fact the editor hands back about how a command went, and it arrives in the tool response as text. Counting it means a failure is recorded even when the model does not notice one - the case the budget was blind to, because only the model's own `fail` call ever moved the counter before.",
+    "state": "executing",
+    "facts": { "fail_count": "1" },
+    "payload": {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "python release/build/build.ps1" },
+      "tool_response": "building\nCommand exited with code 1"
+    },
+    "expect_context_contains": ["exited with code 1", "reached 2 of 2"]
+  },
+  {
+    "id": "posttool-exit-zero-is-not-a-failure",
+    "why": "The other side of the count. A command that exited 0 is not added to the budget, so an ordinary successful run cannot arm it.",
+    "state": "executing",
+    "facts": { "fail_count": "1" },
+    "payload": {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "python release/build/build.ps1" },
+      "tool_response": "built\nCommand exited with code 0"
+    },
+    "expect_silent": true
+  },
+  {
+    "id": "posttool-answer-by-exit-is-not-counted",
+    "why": "`grep` returns 1 for 'no match' and `diff` for 'they differ'. That 1 is the answer to the question the command was asked, not a failure, so the first word decides whether the exit code is a verdict at all.",
+    "state": "executing",
+    "facts": { "fail_count": "1" },
+    "payload": {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "grep -q needle src/notes.md" },
+      "tool_response": "Command exited with code 1"
+    },
+    "expect_silent": true
   },
   {
     "id": "posttool-normal-output-stays-silent",

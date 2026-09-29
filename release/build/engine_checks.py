@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Checks on the engine itself: not shipped, because only the person editing ocf.py can be bitten.
+"""Checks on the engine, and on this repository's own conventions. Not shipped: a deployer cannot act
+on a failure by either kind, because neither is about their policy, their tools or their documents.
 
-Every check in `.github/ocf/tests/run.py` reaches the person who deploys this gate, because that file
-is part of the payload - which means it should only contain things THEY can break: their policy, their
-tools, their rules, their protected list, their documentation. A check on the state machine's internals
-is not one of those. Nobody who deploys a gate ever edits TRANSITIONS, GATES or evaluate_rule_v2, so a
-failure there tells them nothing they can act on, and the message says so in a vocabulary they have no
-reason to know.
-
-They are not deleted, because they do catch real defects - the CLI vocabulary drifting from the
-dispatcher, a gated pair renamed into advancing in silence, a soft rule read as a verdict by the
-fail-safe. They live here instead, on the side of the line that does not ship: `release/build/` is in no
-archive. `build.ps1` runs both suites before it packages anything, so a broken engine cannot reach a
-release - which is the arrangement that was missing, since the build used to run no checks at all.
+The one test for which side a check belongs on: if it fails, can the person reading the message act on
+it? If they can, it belongs in `.github/ocf/tests/run.py`, which travels with the payload. If the
+message names something they do not have and should not have, it belongs here, where `build.ps1` runs
+it before packaging and it reaches nobody.
 
 They import their helpers from the shipped suite rather than growing a second copy of `build_root`,
-`load_ocf_module` and the temp-repo plumbing.
+`load_ocf_module`, `iter_markdown_files` and the temp-repo plumbing.
 """
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -31,10 +25,22 @@ REPO = os.path.dirname(os.path.dirname(HERE))
 TESTS = os.path.join(REPO, ".github", "ocf", "tests")
 sys.path.insert(0, TESTS)
 
-from run import ENTRY, POLICY, build_root, install_into, load_ocf_module, run_cli  # noqa: E402
+from run import (ENTRY, POLICY, build_root, install_into, iter_markdown_files,  # noqa: E402
+                 load_ocf_module, run_cli)
 
 # Both moved here with the checks that use them; they have no other reader.
-GATED_PAIRS = (("asking", "planning"), ("planning", "executing"))
+#
+# The gates table is keyed by the state being ENTERED, so the expectation is written as which targets
+# must be gated and which must not be. Written out rather than read from the table: a check that reads
+# its own expectation out of the thing it checks stays green when that thing is renamed or emptied.
+GATED_TARGETS = ("planning", "executing")
+# `blocked` is the bypass - the state a machine enters when it cannot go on. It is the one place that
+# must ask nothing, and a bypass that asks is not a bypass.
+UNGATED_TARGETS = ("blocked",)
+# The routes worth walking: every way INTO a gated state that the machine can actually take. The one
+# from `blocked` is here on purpose - leaving the bypass used to run no gate at all, and a table keyed
+# by origin made that look like a designed exemption instead of the hole it was.
+GATED_ROUTES = (("asking", "planning"), ("blocked", "planning"), ("planning", "executing"))
 
 PROBE_POLICY = """\
 [[rule]]
@@ -77,11 +83,13 @@ def check_transition_table():
         if target not in ocf.STATES:
             problems.append("the agent target %r is not a state" % target)
     mentioned = set(table["agent_targets"])
-    for pair in table["gates"]:
-        for name in pair:
-            if name not in ocf.STATES:
-                problems.append("a gate key names %r, which is not a state" % name)
-        mentioned.update(pair)
+    for target in table["gates"]:
+        if target not in ocf.STATES:
+            problems.append("a gate key names %r, which is not a state" % target)
+        mentioned.add(target)
+    if table["bypass"] in table["gates"]:
+        problems.append("the bypass %r is gated, so entering or leaving it asks something of the "
+                        "machine; a bypass that asks is not a bypass" % table["bypass"])
     unmentioned = sorted(set(ocf.STATES) - mentioned)
     if unmentioned:
         problems.append("no part of the table mentions the state(s) %s, so nothing governs them"
@@ -117,34 +125,214 @@ def check_transition_table():
 
 
 def check_gated_transitions():
-    """Every transition the machine gates must really run gates, and must name states that exist.
+    """Arriving somewhere gated runs gates, whoever you are and wherever you came from.
 
     The expectation is written out above rather than taken from the table, because a check that iterates
     the table to build its own expectation stays green when a key is renamed or emptied - and that is
     exactly the omission it exists to catch. `transition_gate_names` falls back to an empty tuple for an
-    unknown pair, so a renamed key would advance the machine with no gate running and nothing printed.
+    unknown destination, so a renamed key would advance the machine with no gate running and nothing
+    printed. That is also what `blocked` did: the table had no key for it, so the way out of the bypass
+    was free.
 
-    Blind spot, stated rather than implied: it does not notice a gated pair deleted outright, only a pair
-    renamed or emptied. It guards the keys, not the set of transitions.
+    `blocked` is asserted to be ungated as well, from the other side - it is the one destination that
+    must ask nothing.
     """
     ocf = load_ocf_module()
     problems = []
-    for pair in GATED_PAIRS:
-        for name in pair:
+    for route in GATED_ROUTES:
+        for name in route:
             if name not in ocf.STATES:
-                problems.append("%s names %r, which is not a state in STATES" % (pair, name))
-        names = ocf.transition_gate_names(*pair)
+                problems.append("%s names %r, which is not a state in STATES" % (route, name))
+        names = ocf.transition_gate_names(*route)
         if not names:
             problems.append("the transition %s -> %s runs no gate at all, so it would advance in "
-                            "silence" % pair)
+                            "silence" % route)
         for name in names:
             if name not in ocf.GATES:
                 problems.append("the transition %s -> %s names a gate the engine does not have: %s"
-                                % (pair[0], pair[1], name))
-    for pair in ocf.TRANSITIONS["gates"]:
-        for name in pair:
-            if name not in ocf.STATES:
-                problems.append("a key of the transition table names %r, which is not a state" % name)
+                                % (route[0], route[1], name))
+    for target in UNGATED_TARGETS:
+        if ocf.transition_gate_names("asking", target):
+            problems.append("entering %s runs gates; it is the bypass and must ask nothing" % target)
+    for target in ocf.TRANSITIONS["gates"]:
+        if target not in ocf.STATES:
+            problems.append("a key of the transition table names %r, which is not a state" % target)
+    for target in GATED_TARGETS:
+        if target not in ocf.TRANSITIONS["gates"]:
+            problems.append("nothing gates arriving at %s, so the machine can walk in ungated"
+                            % target)
+    assert not problems, "; ".join(problems)
+
+
+def check_gate_reports_what_is_in_front():
+    """`gate` with no argument reports the gates in front of the machine, and only those.
+
+    Running all seven by default meant `grill-valid` printed FAIL in every state but `asking`, because
+    it reads intake facts that leaving `asking` clears on purpose - so the ordinary invocation always
+    exited 1. A diagnostic that is wrong in the ordinary case is one the human learns to stop reading,
+    and this is the only diagnostic there is.
+
+    The other direction is asserted too: `blocked` is not on the flow, so nothing is in front of it.
+    Inventing a transition for it would be the same mistake mirrored.
+
+    The expectation is written out per state. Deriving both sides from the flow would make this pass by
+    construction, which is indistinguishable from having no check.
+    """
+    ocf = load_ocf_module()
+    expected = {
+        "ready": (),
+        "asking": ("context", "docs-decision", "grill-valid"),
+        "planning": ("plan-schema", "zero-p0", "protected-list-clear", "stack-env"),
+        "executing": (),
+        "reporting": (),
+        "blocked": (),
+    }
+    problems = []
+    for state, names in expected.items():
+        actual = tuple(ocf.gate_names_in_front(state))
+        if actual != names:
+            problems.append("%s: %s is in front of it, expected %s"
+                            % (state, actual or "nothing", names or "nothing"))
+    assert not problems, "; ".join(problems)
+
+
+def check_github_folder_is_ascii():
+    """Every file under .github is ASCII, and the exemption list is empty on purpose.
+
+    A leading BOM is stripped first: it is an encoding mark rather than content, and the previous
+    PowerShell implementation genuinely needed one. Build output is skipped, because a .pyc is not
+    source.
+
+    This is a rule about how THIS repository writes. It used to ship, which meant a deployer who wrote
+    their own policy messages in their own language met a failure whose message told them to stop - and
+    `.github` is theirs, so it was accusing the wrong person. Moving it here keeps the check and points
+    it at the only person who agreed to it.
+    """
+    offenders = []
+    for folder, folders, files in os.walk(os.path.join(REPO, ".github")):
+        folders[:] = [name for name in folders if name not in ("__pycache__", ".pytest_cache")]
+        for name in files:
+            path = os.path.join(folder, name)
+            with open(path, "rb") as handle:
+                data = handle.read()
+            if data.startswith(b"\xef\xbb\xbf"):
+                data = data[3:]
+            if any(byte > 127 for byte in data):
+                offenders.append(os.path.relpath(path, REPO).replace("\\", "/"))
+    assert not offenders, ("non-ASCII bytes in: %s. Nothing under .github is exempt, because a file the "
+                           "toolchain reads is a file the toolchain has to encode consistently"
+                           % ", ".join(offenders))
+
+
+WORKFLOW = os.path.join(REPO, ".github", "work-control-flow.md")
+# The sections other files cite by number. A citation is a number, so renumbering the document silently
+# re-points every one of them and nothing complains: the agent simply follows the wrong section. The
+# titles below are what this check believes that document's numbering is, and they are compared with
+# the document on every run - so the list cannot drift, it can only be deliberately updated.
+CITED_SECTIONS = {2: "Commands", 5: "Intake", 6: "Planning and approval", 7: "Terminal discipline",
+                  8: "Delivery", 9: "Limits and switches", 10: "Known limitations"}
+SECTION_HEADING = re.compile(r"(?m)^##\s+(\d+)\.\s+(.+?)\s*$")
+CITATION = re.compile(r"section\s+(\d+)|\u7b2c\s*(\d+)\s*\u8282|\u00a7\s*(\d+)")
+
+
+def check_section_references():
+    """Every "see section N" in the markdown still points at the section it was written about.
+
+    Asserted here rather than in the shipped suite because the numbering is this repository's.
+    """
+    with open(WORKFLOW, "r", encoding="utf-8") as handle:
+        headings = {int(number): title for number, title in SECTION_HEADING.findall(handle.read())}
+    problems = []
+    if sorted(headings) != list(range(1, len(headings) + 1)):
+        problems.append("the sections are numbered %s, so no citation can be trusted to land"
+                        % ", ".join(str(number) for number in sorted(headings)))
+    for number, title in sorted(CITED_SECTIONS.items()):
+        if number not in headings:
+            problems.append("section %d (%s) is cited from other files and is gone" % (number, title))
+        elif headings[number] != title:
+            problems.append("section %d is %r, and the files citing it by number expect %r - a "
+                            "renumbering re-points every one of them"
+                            % (number, headings[number], title))
+    for path in iter_markdown_files():
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+        for index, line in enumerate(lines, 1):
+            for groups in CITATION.findall(line):
+                number = int([group for group in groups if group][0])
+                if number not in headings:
+                    problems.append("%s:%d cites section %d, which does not exist"
+                                    % (os.path.relpath(path, REPO), index, number))
+    assert not problems, "; ".join(problems)
+
+
+def check_readme_matches_the_policy():
+    """Both READMEs list every rule by name, and both carry the state flow.
+
+    The list is hand-written, so it is a second copy of the policy - the kind that drifts. Asserting it
+    is what makes the copy safe: a renamed rule or a new one fails here until the README follows, and a
+    renumbered flow fails too. The READMEs are at the repository root and ship in nothing, so this
+    belongs on this side of the line.
+    """
+    ocf = load_ocf_module()
+    policy, warnings = ocf.load_policy(REPO)
+    for kind, text in warnings:
+        raise AssertionError("the policy did not load cleanly: [%s] %s" % (kind, text))
+    ids = [rule.get("id") for rule in policy.get("rule", [])]
+    flow = " \u2192 ".join(ocf.TRANSITIONS["flow"])
+    problems = []
+    for name in ("README.md", "README_CH.md"):
+        with open(os.path.join(REPO, name), encoding="utf-8") as handle:
+            text = handle.read()
+        missing = sorted(rule_id for rule_id in ids if "`%s`" % rule_id not in text)
+        if missing:
+            problems.append("%s does not list %s" % (name, ", ".join(missing)))
+        if flow not in text:
+            problems.append("%s does not carry the state flow %r" % (name, flow))
+        if ocf.TRANSITIONS["bypass"] not in text:
+            problems.append("%s does not name the bypass state %r"
+                            % (name, ocf.TRANSITIONS["bypass"]))
+    assert not problems, "; ".join(problems)
+
+
+def check_rule_counts_in_docs():
+    """Both READMEs state how many rules there are, and nothing was comparing that to the file.
+
+    It is not decoration. The count is the only number in the documentation that describes the
+    policy's own size, and it is the number a reader uses to tell whether the rules they are reading
+    about are all of them.
+
+    During the batch that folded the two self-protection rules into the protected list, this check
+    would have been the only thing to notice that three soft rules had gone missing. The policy still
+    parsed, `policy_findings` still reported nothing, and `selftest` still passed - because a soft rule
+    with an occasion and a sentence is a valid rule no matter what the sentence says. A count that is
+    asserted in two languages is cheap, and it is the difference between a mistake being found by a
+    check and being found by somebody counting by hand later.
+
+    Both halves are read out of the policy by kind, and out of both READMEs by a pattern that tolerates
+    the two languages' word order. A README that stops mentioning the count at all fails too: a count
+    that can be deleted instead of corrected is one that can go stale in silence.
+    """
+    ocf = load_ocf_module()
+    policy, warnings = ocf.load_policy(REPO)
+    for kind, text in warnings:
+        raise AssertionError("the policy did not load cleanly: [%s] %s" % (kind, text))
+    rules = policy.get("rule", [])
+    actual = [len([rule for rule in rules if rule.get("kind") != "soft"]),
+              len([rule for rule in rules if rule.get("kind") == "soft"])]
+    pattern = re.compile(r"(\d+)\s*(?:hard|条硬)[^\d]{0,24}?(\d+)\s*(?:soft|条软)")
+    problems = []
+    for name in ("README.md", "README_CH.md"):
+        with open(os.path.join(REPO, name), encoding="utf-8") as handle:
+            text = handle.read()
+        found = pattern.findall(text)
+        if not found:
+            problems.append("%s no longer states the rule counts at all" % name)
+            continue
+        for hard, soft in found:
+            if [int(hard), int(soft)] != actual:
+                problems.append("%s says %s hard and %s soft rules; policy.toml holds %d and %d; "
+                                "the rules are counted by kind, so update the sentence or the rules"
+                                % (name, hard, soft, actual[0], actual[1]))
     assert not problems, "; ".join(problems)
 
 
@@ -260,7 +448,7 @@ def check_line_endings_are_normalised():
         shutil.rmtree(root, ignore_errors=True)
 
 
-def check_prompt_instrumentation():
+def check_prompt_log():
     """A UserPromptSubmit must leave a record, because that record is what settles who spoke.
 
     The gate has no reliable signal for "a human really replied". Until the instrumentation answers
@@ -358,11 +546,29 @@ def check_human_cli():
             return handle.read()
 
     try:
+        # `protect` refuses an entry that would cover nothing, so the fixture has to contain the file
+        # it is asked to protect. That refusal is asserted immediately after, on a path that does not
+        # exist: writing an entry that protects nothing and echoing it as success is what this list
+        # used to do, and it is how a run of stray arguments once put sixteen lines of junk into a
+        # human's list while printing `covers 0 file(s)` on every one of them.
+        os.makedirs(os.path.join(root, "src"))
+        with open(os.path.join(root, "src", "notes.md"), "w", encoding="utf-8") as handle:
+            handle.write("notes\n")
         code, out, err = run_cli(root, "protect", "src/notes.md")
         if code != 0:
             problems.append("`protect` exited %d: %s" % (code, (err or out).strip()[-200:]))
         if "src/notes.md" not in read(".github/protected.txt"):
             problems.append("`protect` did not add the path: %r" % read(".github/protected.txt"))
+        code, out, err = run_cli(root, "protect", "src/missing.md")
+        if code == 0:
+            problems.append("`protect` accepted a path that covers no file, so the list can fill up "
+                            "with entries that protect nothing")
+        if "src/missing.md" in read(".github/protected.txt"):
+            problems.append("`protect` wrote an entry it had just refused: %r"
+                            % read(".github/protected.txt"))
+        if "src/missing.md" not in (err or out):
+            problems.append("the refusal did not name the path, so it cannot be acted on: %r"
+                            % (err or out).strip()[:200])
         code, out, err = run_cli(root, "unprotect", "src/notes.md")
         if code != 0:
             problems.append("`unprotect` exited %d: %s" % (code, (err or out).strip()[-200:]))
@@ -603,6 +809,11 @@ def check_intake_closes_on_leaving_asking():
 CHECKS = (
     ("transition-table", check_transition_table),
     ("gated-transitions", check_gated_transitions),
+    ("gate-in-front", check_gate_reports_what_is_in_front),
+    ("github-folder-ascii", check_github_folder_is_ascii),
+    ("section-references", check_section_references),
+    ("rule-counts-in-docs", check_rule_counts_in_docs),
+    ("readme-matches-the-policy", check_readme_matches_the_policy),
     ("new-rule-shape", check_new_rule_shape),
     ("soft-rules-never-gate", check_soft_rules_never_gate),
     ("line-endings", check_line_endings_are_normalised),
@@ -610,7 +821,7 @@ CHECKS = (
     ("human-cli", check_human_cli),
     ("install-deploys", check_install_deploys),
     ("package-builds-a-release", check_package_builds_a_release),
-    ("prompt-instrumentation", check_prompt_instrumentation),
+    ("prompt-log", check_prompt_log),
     ("intake-closes", check_intake_closes_on_leaving_asking),
 )
 

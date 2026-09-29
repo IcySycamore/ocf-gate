@@ -59,9 +59,10 @@ TRANSITIONS = {
     # the drawing behind and the drawing is what the human reads first.
     "flow": ("ready", "asking", "planning", "executing", "reporting", "ready"),
     "bypass": "blocked",
+    # Keyed by the state being entered, so every route into a state passes the same gates.
     "gates": {
-        ("asking", "planning"): ("context", "docs-decision", "grill-valid"),
-        ("planning", "executing"): ("plan-schema", "zero-p0", "protected-list-clear", "stack-env"),
+        "planning": ("context", "docs-decision", "grill-valid"),
+        "executing": ("plan-schema", "zero-p0", "protected-list-clear", "stack-env"),
     },
     # Grouped by mechanism, one tuple per line: the gates a human opens, the protected list, and the
     # installation itself. `approve` covers both gated transitions, because the state already says
@@ -90,8 +91,8 @@ TRANSITIONS = {
         "package": "package <output-dir>",
         "approve": 'approve "<reason>"',
         "reject": 'reject ["<reason>"]',
-        "protect": "protect <path>",
-        "unprotect": "unprotect <path>",
+        "protect": "protect <path ...>",
+        "unprotect": "unprotect <path ...>",
     },
 }
 
@@ -99,12 +100,11 @@ TRANSITIONS = {
 AGENT_TARGETS = TRANSITIONS["agent_targets"]
 ACTING_STATES = TRANSITIONS["acting_states"]
 ENTER_TRANSITION_GATES = TRANSITIONS["gates"]
+FLOW = TRANSITIONS["flow"]
 
-# The transition each state has a gate on, which is what `approve` opens. Derived from the gates table
-# rather than written again, and that derivation is what made the merge possible: with it, "approve is
-# the human opening the gate in front of the machine" and "a gate is on this transition" are one fact
-# instead of two lists that have to keep agreeing.
-APPROVE_TARGETS = {source: target for (source, target) in ENTER_TRANSITION_GATES}
+# What `approve` opens: the flow edge whose destination carries a gate. Derived, not written twice.
+APPROVE_TARGETS = {source: target for (source, target) in zip(FLOW, FLOW[1:])
+                   if target in ENTER_TRANSITION_GATES}
 
 POLICY_REL = ".github/ocf/policy.toml"
 HOOKS_REL = ".github/hooks/orchestrator.json"
@@ -176,8 +176,14 @@ HOOK_EVENTS = (
 PATH_KEYS = ("filePath", "file_path", "path", "newPath", "uri", "dirPath")
 CONTENT_KEYS = ("content", "newString", "new_string", "newCode", "new_str", "body")
 
-WRITE_RE = re.compile(
-    r"(?i)(>>?(?!&)|Set-Content|Out-File|Add-Content|New-Item|Copy-Item|Move-Item|Remove-Item|"
+# Two questions, two regexes, because they read different texts. A redirect is tested against the
+# command with quoted spans blanked out - `>` inside a closed pair of quotes is not a redirect in any
+# shell, and treating it as one refused perfectly ordinary commands (`git commit -m "a->b"`) with
+# advice that could not be followed, since that command has no path to name. A writing command's NAME
+# is tested against the command as written, because it is a name whether or not it sits in quotes.
+REDIRECT_RE = re.compile(r">>?(?!&)")
+WRITE_CMD_RE = re.compile(
+    r"(?i)(Set-Content|Out-File|Add-Content|New-Item|Copy-Item|Move-Item|Remove-Item|"
     r"Rename-Item|Set-ItemProperty|\bdel\b|\berase\b|\brm\b|\bmv\b|\bcp\b|\btouch\b|\bmkdir\b|"
     r"\btee\b|\btruncate\b|git\s+apply)"
 )
@@ -611,7 +617,7 @@ HOOK_HELP = (
 )
 
 # What each gate demands, next to the transition that runs it. This was prose in the rules document and
-# it drifted twice over: the gate list there named a rule (`protected-file`) instead of a gate, and
+# it drifted twice over: the gate list there named a rule (`touches-protected`) instead of a gate, and
 # claimed plan-schema wants the eight plan sections when it reads two of them.
 GATE_HELP = {
     "context": "the five intake items are present and each at least 4 characters",
@@ -653,7 +659,8 @@ def render_vocabulary():
               "# `result` accepts:"]
     lines += ["#   %-18s %s" % (name, help_text) for name, help_text in ACTION_HELP]
     lines += ["",
-              "# a soft rule's occasion, i.e. when its sentence is in force:"]
+              "# the moments a soft rule may name in its occasion. A hard rule names a state in the same",
+              "# key - one key, two sets of values, and the kind decides which are legal:"]
     lines += ["#   %-18s %s" % (name, help_text) for name, help_text in OCCASION_HELP]
     lines += ["",
               "# [hooks] switches:"]
@@ -770,13 +777,21 @@ def policy_findings(policy):
             problems.append("%s: else belongs to a soft rule. A hard rule gives a verdict, not a "
                             "sentence for both switch positions" % where)
         for name, value in sorted((rule.get("if") or {}).items()):
+            # One key, two vocabularies, decided by kind - and an unknown value in EITHER is reported.
+            # A hard rule used to be able to name any key in CONDITIONS and no value was ever checked,
+            # so `occasion = "plannning"` (three n) built a rule that looked present in the file, loaded
+            # without complaint, and never fired once. A rule that is on and does nothing is the exact
+            # failure this function exists to make loud.
+            if name == "occasion":
+                known = SOFT_OCCASIONS if kind == "soft" else STATES
+                where_it_fires = ("a soft rule fires at a moment in the conversation"
+                                  if kind == "soft" else "a hard rule fires in a state")
+                for moment in comma_list(value):
+                    if moment not in known:
+                        problems.append("%s: unknown occasion %r; %s, and the engine knows %s"
+                                        % (where, moment, where_it_fires, ", ".join(known)))
+                continue
             if kind == "soft":
-                if name == "occasion":
-                    for moment in comma_list(value):
-                        if moment not in SOFT_OCCASIONS:
-                            problems.append("%s: unknown occasion %r; the engine knows %s"
-                                            % (where, moment, ", ".join(SOFT_OCCASIONS)))
-                    continue
                 problems.append("%s: a soft rule is keyed on occasion, not on %r; a soft rule fires "
                                 "at a moment in the conversation, where no tool is being called"
                                 % (where, name))
@@ -1001,7 +1016,7 @@ def render_reference(policy):
     """Render the derived half of the rules document: what the gate actually does.
 
     Everything here is computable from the tables and the rules, so none of it should be hand-copied:
-    the hand-copied version of exactly this list had the gate named `protected-file` (a rule id) and
+    the hand-copied version of exactly this list had the gate named `touches-protected` (a rule id) and
     told the reader that plan-schema wants eight sections (it wants two). A reference that is rendered
     cannot be wrong about the thing it is rendered from, and where it disagrees with a human's
     expectation, the rendering is right and the expectation is the thing to fix.
@@ -1009,8 +1024,8 @@ def render_reference(policy):
     lines = ["### Gates", "",
              "A gate is a precondition of a state change, not a rule about tool calls. Failing one "
              "refuses the transition and names what is missing.", ""]
-    for (source, target), names in sorted(TRANSITIONS["gates"].items()):
-        lines.append("`%s -> %s`" % (source, target))
+    for target, names in sorted(TRANSITIONS["gates"].items()):
+        lines.append("Entering `%s`" % target)
         for name in names:
             lines.append("- `%s` - %s" % (name, GATE_HELP.get(name, "MISSING DESCRIPTION")))
         lines.append("")
@@ -1302,14 +1317,8 @@ def glob_regex(pattern):
     return body
 
 
-def path_match(pattern, value):
-    """Case-insensitive. A pattern with no wildcard is an exact path; otherwise a glob."""
-    if not pattern or not value:
-        return False
-    left = norm_path("", pattern)
-    right = norm_path("", value)
-    if not left or not right:
-        return False
+def pattern_hits(left, right):
+    """One candidate, already normalised: no wildcard means an exact path, otherwise a glob."""
     if not any(char in left for char in "*?"):
         return left.lower() == right.lower()
     try:
@@ -1318,11 +1327,52 @@ def path_match(pattern, value):
         return False
 
 
+def path_match(pattern, value):
+    """Case-insensitive. A pattern that matches a directory matches everything under it.
+
+    A trailing separator is dropped, so `.github/ocf/` and `.github/ocf` are the same request.
+    """
+    if not pattern or not value:
+        return False
+    left = norm_path("", pattern).rstrip("/")
+    right = norm_path("", value).rstrip("/")
+    if not left or not right:
+        return False
+    if pattern_hits(left, right):
+        return True
+    ancestor = right
+    while "/" in ancestor:
+        ancestor = ancestor.rsplit("/", 1)[0]
+        if ancestor and pattern_hits(left, ancestor):
+            return True
+    return False
+
+
 def listed_in(root, relative, value):
     for entry in load_list(root, relative):
         if path_match(entry, value):
             return True
     return False
+
+
+def working_files(root, limit=500):
+    """Every file under root, relative and forward-slashed. `.git` is skipped, and the list is capped."""
+    found = []
+    for base, dirs, files in os.walk(root):
+        dirs[:] = [name for name in dirs if name != ".git"]
+        for name in files:
+            found.append(norm_path(root, os.path.join(base, name)))
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def pattern_covers(root, pattern):
+    """The files under root that this list entry actually protects.
+
+    Reported when an entry is added, so an entry that protects nothing is visible rather than silent.
+    """
+    return [path for path in working_files(root) if path_match(pattern, path)]
 
 
 # ---------------------------------------------------------------------------
@@ -1495,8 +1545,33 @@ TARGET_THESE = "these"      # it writes here, and these are the paths
 TARGET_UNREAD = "unknown"   # it writes, and where could not be read
 
 
+def strip_quoted(text):
+    """Blank out quoted spans, and say whether the quotes balanced.
+
+    An unbalanced command is returned unchanged: an unterminated quote is exactly the case where `>`
+    may still be a redirect, and the gate has no business guessing.
+    """
+    out = []
+    quote = None
+    for char in text:
+        if quote:
+            if char == quote:
+                quote = None
+            out.append(" ")
+        elif char in "\"'":
+            quote = char
+            out.append(" ")
+        else:
+            out.append(char)
+    return "".join(out), quote is None
+
+
 def write_targets(root, command):
-    if not command or not WRITE_RE.search(command):
+    if not command:
+        return Targets(TARGET_NONE, [])
+    outside_strings, balanced = strip_quoted(command)
+    redirect_seen = REDIRECT_RE.search(outside_strings if balanced else command)
+    if not redirect_seen and not WRITE_CMD_RE.search(command):
         return Targets(TARGET_NONE, [])
     found = []
     for token in TOKEN_RE.findall(command):
@@ -1686,7 +1761,7 @@ def class_condition(context, value):
     A class the engine does not know used to compare unequal and return quietly. So a rule whose class
     was misspelled - or renamed in the engine and not in the policy - simply stopped applying, and for
     the rules that protect the orchestrator's own files and the protected list that is a silent hole.
-    That is how this was found: `edit` became `write` here, and `protected-file` quietly went from
+    That is how this was found: `edit` became `write` here, and `touches-protected` quietly went from
     refusing to allowing while every other test stayed green.
     """
     wanted = comma_list(value)
@@ -1757,9 +1832,12 @@ CONDITIONS = {
         "context", class_condition, None, (),
         "the tool's class, or the class a tool carrying a command is judged as: visual, env, exec, "
         "write, read, session, unknown, or any for every tool"),
-    "state": Condition(
+    "occasion": Condition(
         "context", lambda context, value: context.state in comma_list(value), None, (),
-        "the current state: ready, asking, planning, executing, reporting, blocked"),
+        "the occasion a rule is for. One key, two sets of values: a hard rule names the states "
+        "(ready, asking, planning, executing, reporting, blocked), a soft rule names the moments in "
+        "the conversation (session-start, ask, plan, act, answer). The kind decides which are legal, "
+        "and naming a value from the other set is reported rather than silently never firing"),
     "tool": Condition(
         "context", lambda context, value: context.tool in comma_list(value), None, (),
         "the tool name as the editor reports it"),
@@ -2087,6 +2165,56 @@ NO_PROGRESS_PATTERNS = (
 )
 
 
+EXIT_CODE_RE = re.compile(r"(?i)exited with code (-?\d+)")
+FAILURE_BUDGET_RULE = "failure-budget"
+
+# A command whose exit code IS its answer: `grep` returns 1 for "no match", `diff` for "they differ".
+# Counting those as failures would arm the budget on a command that answered the question it was asked.
+ANSWER_BY_EXIT = ("grep", "findstr", "select-string", "test-path", "diff", "compare-object")
+FIRST_WORD_RE = re.compile(r"^\s*&?\s*([A-Za-z][A-Za-z0-9_.\-]*)")
+
+
+def rule_by_id(policy, rule_id):
+    for rule in policy_value(policy, "rule"):
+        if rule.get("id") == rule_id:
+            return rule
+    return None
+
+
+def command_leads_with_an_answer(command):
+    """Whether the command's first word has an exit code that answers rather than judges.
+
+    The first word, not any word: `python run.py | Select-String x` also contains one, and that
+    command's exit code is python's. The limit is honest - a word hidden behind a variable or a wrapper
+    is not seen, and then the failure is counted.
+    """
+    head = FIRST_WORD_RE.search(command)
+    if not head:
+        return False
+    return head.group(1).split(".")[0].lower() in ANSWER_BY_EXIT
+
+
+def count_exit_code_failure(root, policy, payload, response):
+    """Count a non-zero exit, and return the warning once the budget is reached, else None.
+
+    The exit code is the one machine fact the editor hands back about how a command went. Counting it
+    means a failure is recorded even when the model does not notice one - the case the budget was
+    blind to, because until now only the model's own `fail` call ever moved the counter.
+    """
+    command = extract_command(payload, policy, payload.get("tool_name") or "")
+    if command_leads_with_an_answer(command):
+        return None
+    codes = EXIT_CODE_RE.findall(response)
+    if not codes or codes[-1] == "0":
+        return None
+    count, budget = record_failure(root, policy, "exit code %s: %s" % (codes[-1], command[:80]))
+    if count < budget:
+        return None
+    return ("OCF: the previous command exited with code %s, so it did not succeed, and consecutive "
+            "failures have reached %d of %d. Stop and report the symptom, what you tried, and what "
+            "you need from the human." % (codes[-1], count, budget))
+
+
 def handle_post_tool(root, policy, payload):
     """Return a warning to inject when a command produced no progress, else None."""
     tool = payload.get("tool_name") or ""
@@ -2095,6 +2223,11 @@ def handle_post_tool(root, policy, payload):
     response = payload.get("tool_response")
     if not isinstance(response, str):
         response = "" if response is None else str(response)
+    budget_rule = rule_by_id(policy, FAILURE_BUDGET_RULE)
+    if budget_rule is not None and rule_switch(budget_rule, policy):
+        counted = count_exit_code_failure(root, policy, payload, response)
+        if counted:
+            return counted
     for pattern, why in NO_PROGRESS_PATTERNS:
         if pattern.search(response):
             journal(root, policy, read_state(root, policy), "no-progress command: %s" % why)
@@ -2817,19 +2950,40 @@ def cmd_set(root, policy, args):
     return 0
 
 
+def gate_names_in_front(state):
+    """The gates of the transition out of this state. `blocked` is not on the flow, so it has none."""
+    if state not in FLOW:
+        return ()
+    position = FLOW.index(state)
+    if position + 1 >= len(FLOW):
+        return ()
+    return transition_gate_names(state, FLOW[position + 1])
+
+
 def cmd_gate(root, policy, args):
-    name = args[0] if args else "all"
-    if name == "all":
-        results = run_gates(root, policy, sorted(GATES))
+    """No argument reports the gates in front of the machine. `all` reports every gate, printing `-`
+    for the ones that do not apply here; a named gate is reported as it comes out.
+    """
+    state = read_state(root, policy)
+    in_front = set(gate_names_in_front(state))
+    if not args:
+        wanted, judged = tuple(sorted(in_front)), True
+    elif args[0] == "all":
+        wanted, judged = tuple(sorted(GATES)), False
     else:
+        name = args[0]
         if name not in GATES:
             raise OcfError("environment", "unknown gate %r; known: %s" % (name, ", ".join(sorted(GATES))))
-        results = run_gates(root, policy, (name,))
+        wanted, judged = (name,), True
     failed = 0
-    for gate_name, ok, detail in results:
-        out("%-18s %s  %s" % (gate_name, "PASS" if ok else "FAIL", detail))
-        if not ok:
+    for gate_name, ok, detail in run_gates(root, policy, wanted):
+        if ok:
+            out("%-18s %s  %s" % (gate_name, "PASS", detail))
+        elif judged or gate_name in in_front:
+            out("%-18s %s  %s" % (gate_name, "FAIL", detail))
             failed += 1
+        else:
+            out("%-18s %s  %s" % (gate_name, "-", "not in front of %s: %s" % (state, detail)))
     return 0 if failed == 0 else 1
 
 
@@ -2846,10 +3000,13 @@ def cmd_journal(root, policy, args):
     return 0
 
 
-def cmd_fail(root, policy, args):
-    reason = " ".join(args).strip()
-    if not reason:
-        raise OcfError("environment", "fail needs a one-line reason")
+def record_failure(root, policy, reason):
+    """Add one to the failure counter, and arm `must_consult` when the budget is reached.
+
+    One place, because the counter now has two callers - the model recording a failure it saw, and the
+    post-tool handler recording one it read off the exit code - and two copies of the budget check
+    would be two answers to when the gate locks.
+    """
     facts = load_facts(root, policy)
     try:
         count = int(facts.get("fail_count", "0"))
@@ -2862,6 +3019,14 @@ def cmd_fail(root, policy, args):
         facts["must_consult"] = "yes"
     save_facts(root, policy, facts)
     journal(root, policy, read_state(root, policy), "fail #%d: %s" % (count, reason))
+    return count, budget
+
+
+def cmd_fail(root, policy, args):
+    reason = " ".join(args).strip()
+    if not reason:
+        raise OcfError("environment", "fail needs a one-line reason")
+    count, budget = record_failure(root, policy, reason)
     out("consecutive failures: %d of %d" % (count, budget))
     if count >= budget:
         out("MUST CONSULT: stop and report the symptom, what you tried, and what you need.")
@@ -2879,11 +3044,10 @@ def cmd_ok(root, policy, args):
 
 
 def transition_gate_names(source, target):
+    """The gates in front of this move, keyed by destination. `blocked` asks nothing."""
     if target == "blocked":
         return ()
-    if source == "blocked":
-        return ()
-    return ENTER_TRANSITION_GATES.get((source, target), ())
+    return ENTER_TRANSITION_GATES.get(target, ())
 
 
 def cmd_advance(root, policy, args):
@@ -2984,7 +3148,7 @@ def cmd_approve(root, policy, args):
     if target is None:
         raise OcfError("environment", "there is no gate to approve from %s; approve applies in %s"
                                       % (state, " and ".join(sorted(APPROVE_TARGETS))))
-    results = run_gates(root, policy, ENTER_TRANSITION_GATES[(state, target)])
+    results = run_gates(root, policy, ENTER_TRANSITION_GATES[target])
     for name, ok, detail in results:
         out("%-18s %s  %s" % (name, "PASS" if ok else "FAIL", detail))
     failed = [name for name, ok, _ in results if not ok]
@@ -3015,8 +3179,8 @@ def cmd_reject(root, policy, args):
     return 0
 
 
-def update_list(root, policy, path, add):
-    """Add or remove one entry in the protected list. Reached only from the human's own terminal.
+def update_list(root, policy, paths, add):
+    """Add or remove entries in the protected list. Reached only from the human's own terminal.
 
     `policy` is a parameter and not a name this function hopes is in scope. It was not one, so the
     journal call below raised NameError on every run of `protect` and `unprotect` - after the write, so
@@ -3027,24 +3191,40 @@ def update_list(root, policy, path, add):
     The two words in the journal line are the command names. They are spelled here rather than carried
     in from the handler because they name the direction the list moved, which is the fact the log is
     for: `protect` protects and `unprotect` lets the machine touch it.
+
+    It takes every path it was given. The handler used to pass `args[0]`, so `protect a b c` protected
+    `a` and dropped the other two without a word - the same silent-partial-success shape as the pattern
+    that protected nothing. Each entry is also reported back with how many files it covers, because an
+    entry that covers no files is a request that was not granted.
     """
     absolute = os.path.join(root, PROTECTED_LIST_REL)
     entries = load_list(root, PROTECTED_LIST_REL)
     notes = [line for line in (read_lines(absolute) or []) if line.strip().startswith("#")]
-    path = (path or "").strip()
-    if not path:
+    wanted = [norm_path(root, item) for item in paths if (item or "").strip()]
+    if not wanted:
         raise OcfError("environment", "that command needs a path argument")
-    key = norm_path(root, path)
     if add:
-        if key not in entries:
-            entries.append(key)
-        out("protected: %s" % key)
+        for key in wanted:
+            hits = pattern_covers(root, key)
+            if not hits:
+                raise OcfError("policy",
+                               "%s covers no file in this repository, so adding it would protect "
+                               "nothing while looking like protection. Check the spelling, or name a "
+                               "directory that exists - a directory entry covers everything under it "
+                               "and keeps covering files added later. Nothing was written." % key)
+            if key not in entries:
+                entries.append(key)
+            out("protected: %s - covers %d file(s) e.g. %s" % (key, len(hits), hits[0]))
     else:
-        entries = [entry for entry in entries if norm_path("", entry) != key]
-        out("no longer protected: %s" % key)
+        entries = [entry for entry in entries if norm_path("", entry) not in wanted]
+        for key in wanted:
+            out("no longer protected: %s" % key)
     write_text(absolute, "".join(line + "\n" for line in notes + entries))
-    journal(root, policy, read_state(root, policy), "%s %s" % (
-        "protect" if add else "unprotect", key))
+    # One journal line per path, and for a single path the line stays exactly `protect <key>`:
+    # engine_checks' check_human_cli asserts that literal.
+    for key in wanted:
+        journal(root, policy, read_state(root, policy), "%s %s" % (
+            "protect" if add else "unprotect", key))
     return 0
 
 
@@ -3265,8 +3445,8 @@ COMMAND_HANDLERS = {
     "reload": cmd_reload,
     "install": cmd_install,
     "package": cmd_package,
-    "protect": lambda root, policy, args: update_list(root, policy, args[0] if args else "", True),
-    "unprotect": lambda root, policy, args: update_list(root, policy, args[0] if args else "", False),
+    "protect": lambda root, policy, args: update_list(root, policy, args, True),
+    "unprotect": lambda root, policy, args: update_list(root, policy, args, False),
 }
 
 

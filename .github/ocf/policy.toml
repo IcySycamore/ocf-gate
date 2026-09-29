@@ -42,7 +42,7 @@
 # [rule.if] conditions. Each key is one condition; the value is what it compares against,
 # which is usually a regex or a number.
 #   class                  the tool's class, or the class a tool carrying a command is judged as: visual, env, exec, write, read, session, unknown, or any for every tool
-#   state                  the current state: ready, asking, planning, executing, reporting, blocked
+#   occasion               the occasion a rule is for. One key, two sets of values: a hard rule names the states (ready, asking, planning, executing, reporting, blocked), a soft rule names the moments in the conversation (session-start, ask, plan, act, answer). The kind decides which are legal, and naming a value from the other set is reported rather than silently never firing
 #   tool                   the tool name as the editor reports it
 #   command_matches        regex against the command string
 #   command_length_over    the command is longer than this many characters
@@ -71,7 +71,8 @@
 #   deny               refuse, and say why. Handled before any approval logic, so nothing auto-approves past it
 #   require_approval   refuse, and tell the agent to have the human run the approve command
 
-# a soft rule's occasion, i.e. when its sentence is in force:
+# the moments a soft rule may name in its occasion. A hard rule names a state in the same
+# key - one key, two sets of values, and the kind decides which are legal:
 #   session-start      a session begins
 #   ask                the human's statement is being read and gaps are being grilled
 #   plan               a plan is being written or audited
@@ -92,7 +93,7 @@
 #
 # MIGRATION: keep this false until ocf.py has been validated against the real hooks, then flip it to
 # true and reload the window.
-enabled = true
+enabled = false
 
 [paths]
 state_dir = ".orchestrator"
@@ -179,9 +180,8 @@ exec = [
   "run_notebook_cell",
   "create_and_run_task",
 ]
-# env: sets up or changes the toolchain and the environment. Gated by the declared-environment rule
-# first, then by approval - the rule that used to be called test-authorization and toolchain is about
-# commands, and these tools have no command, so they needed their own.
+# env: sets up or changes the toolchain and the environment. Gated by undeclared-env-tool first,
+# then by approval. The exec-class counterpart is undeclared-env-command.
 env = [
   "install_python_packages",
   "install_extension",
@@ -236,7 +236,7 @@ mcp_playwright_browser_evaluate = ["function"]
 
 # plan.md is the artifact the gate itself demands, so it must be writable before approval.
 [[rule]]
-id      = "plan-md-exempt"
+id      = "plan-file-writable"
 enabled = "switch"
 result  = "allow"
 message = "The gate itself asks for this artifact."
@@ -286,7 +286,7 @@ class    = "exec"
 computed = "human_only_call"
 
 [[rule]]
-id      = "advance-target"
+id      = "advance-to-executing"
 enabled = "switch"
 result  = "deny"
 message = "The agent may not advance to that state. Entering executing is a human act."
@@ -306,33 +306,7 @@ class           = "write"
 path_matches    = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
 content_matches = '(?i)ocf\.(py|ps1|sh)\s+(approve|reject|protect|unprotect|reload|install|package)\b'
 
-# The orchestrator's own files. Includes the rules document, because a rules document the machine can
-# rewrite is not a rule. `tests/run.py` asserts that this pattern still matches every one of them, so
-# moving a file without moving the pattern fails a test instead of opening a hole.
-#
-# It follows the master switch like every other rule, on the human's instruction. The switch is the
-# human's, and turning it off is them saying "I am working on this now", so the window opens gate code
-# to whoever is holding it. What keeps that safe is that the switch never leaves the human's hand: no
-# rule grants the agent a way to reach [system], and nothing it can write re-arms the gate by itself.
-[[rule]]
-id      = "self-protection-path"
-enabled = "switch"
-result  = "deny"
-message = "The orchestrator's own files. The human edits them by hand."
-
-[rule.if]
-class        = "write"
-path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/(state|facts|journal\.log|exec\.log)$'
-
-[[rule]]
-id      = "self-protection-write"
-enabled = "switch"
-result  = "deny"
-message = "A command may not write to the orchestrator's own files. Reading them is unaffected: this asks what the command would change, not what it mentions."
-
-[rule.if]
-class        = "exec"
-path_matches = '^\.github/(hooks|ocf|agents|prompts)/|^\.github/work-control-flow\.md$|^\.github/copilot-instructions\.md$|^\.github/protected\.txt$|^\.orchestrator/'
+# The orchestrator's own files are named in .github/protected.txt, not here. One list, one place.
 
 # A command that writes somewhere the gate could not read. `touches_protected` and `path_matches` can
 # only judge a path they were handed, so a target that could not be read reached them as "touches
@@ -356,7 +330,7 @@ write_target_unread = true
 # judges the paths the action touches wherever they came from - which is why no "-write" twin is needed.
 # There is no exemption to grant: the list is the list.
 [[rule]]
-id      = "protected-file"
+id      = "touches-protected"
 enabled = "switch"
 result  = "deny"
 message = "That path is on the protected list. Only the human may change it."
@@ -396,7 +370,7 @@ class           = "exec"
 command_matches = '(?i)Out-Null|-Quiet|--quiet|>\s*\$null|2>\s*\$null|/dev/null|-WindowStyle\s+Hidden'
 
 [[rule]]
-id      = "interactive"
+id      = "interactive-command"
 enabled = "switch"
 result  = "deny"
 message = "The command may block on input or raise a dialog. Rewrite it non-interactively; anything needing elevation or a click is the human's job."
@@ -418,7 +392,7 @@ fact            = "test_authorized"
 is_not          = "yes"
 
 [[rule]]
-id      = "toolchain"
+id      = "undeclared-env-command"
 enabled = "switch"
 result  = "deny"
 message = "The human has not declared the existing environment. Do not install or probe on your own."
@@ -444,7 +418,7 @@ command_matches = '(?i)rm\s+-rf\s+/[^.]|git\s+push\s+.*--force|drop\s+table|git\
 # case that needs a human approve. It is a condition like any other, so a rule can combine it with a
 # class or be excepted by `unless`.
 [[rule]]
-id      = "env-undeclared"
+id      = "undeclared-env-tool"
 enabled = "switch"
 result  = "deny"
 message = "The human has not declared the existing environment. Say what it is before the machine installs, configures or scaffolds anything; do not probe for it."
@@ -490,7 +464,7 @@ class    = "env"
 approval = true
 
 [[rule]]
-id      = "repeat"
+id      = "repeated-command"
 enabled = "switch"
 result  = "ask"
 message = "The same command again, which suggests you are stuck in a loop. The human decides whether to continue."
@@ -503,29 +477,13 @@ command_repeats_at_least = 3
 # Soft rules - kind = "soft"
 # ---------------------------------------------------------------------------
 #
-# No hook can enforce these: nothing can check whether a sentence was written. So instead of a verdict
-# they carry the sentence itself, and `reload` writes them into the part of
-# .github/copilot-instructions.md marked <!-- OCF:GENERATED --> ... <!-- OCF:END -->, which the model
-# reads on every turn. Edit the rule here, which is a file the machine may not touch, then run:
+# A soft rule carries a sentence instead of a verdict. `reload` writes it into
+# .github/copilot-instructions.md between the OCF:GENERATED markers. Edit it here, then run:
 #
 #     python .github/ocf/ocf.py reload
 #
-# Field by field, same five as a hard rule:
-#   enabled    switched off means the sentence is not written out at all
-#   kind       the rule is soft, so `reload` writes it instead of the gate reading it
-#   if         occasion = the moment it applies to; one of session-start, ask, plan, act, answer
-#   unless     the exception, in the human's own words: a soft rule is judged by the model,
-#              because no code can evaluate "is this explanation needed here"
-#   message    the sentence that goes in front of the model - prose, not a verdict. It is the same
-#              key a hard rule uses for the sentence inside its verdict, because it is the same thing:
-#              what the agent reads
-#   else       the sentence that goes in front of the model while this rule is OFF. Optional: with no
-#              else, an off rule says nothing. This is how one rule carries both halves of a choice -
-#              what to do when the machine may not do a thing, and how to do it when it may - so that
-#              neither half has to be copied into an agent or prompt definition, where no switch reaches
-#   label      the short name this rule is listed under, in the contract and in the reference region
-#
-# Order does not matter here: soft rules are never evaluated in sequence, they are grouped by occasion.
+# Fields and values are listed in the vocabulary region at the top of this file, which is generated from
+# the engine - do not repeat them here. Order does not matter: soft rules are not evaluated in sequence.
 
 [[rule]]
 id      = "intake-grilling"
@@ -626,20 +584,94 @@ unless  = "Never an exception"
 occasion = "act"
 
 [[rule]]
-id      = "plan-file"
+id      = "write-for-the-reader"
 kind    = "soft"
-label   = "write the plan as a file"
+label   = "write for the reader"
+enabled = "switch"
+message = """
+Before writing a sentence into an artifact - a comment, a document, a UI string, a commit
+message - stop and name its reader, then write for that reader only.
+Name the reader once per artifact, not once per sentence: when it is not obvious, judge by the
+last thing the human asked for. Deciding again for every sentence costs more than it catches.
+Your hesitation, the options you rejected and the pitfall you guessed at are yours alone:
+they belong in your own memory, never in the deliverable.
+The human tells you which seat they are in by what they ask for:
+  developer  reads comments and internals. Be exact, and explain the design honestly.
+  deployer   follows steps. Say what to do and why each step is required, in whatever
+             technical terms that step needs - neither a wall of jargon nor none at all.
+  user       is on the receiving end: a screen, a page, a story. They are not party to the
+             design, so say what it does for them and nothing about how it does it.
+What this forbids, in one example: a sign-in page that says "your password is never uploaded -
+it is hashed on your own machine, and the server stores only a verifier". Every clause of that
+sentence is true, and none of it belongs on the user's page."""
+unless  = "The human asks for the reasoning on purpose, or is the one building it: then the design IS the answer."
+
+[rule.if]
+occasion = "act, answer"
+
+[[rule]]
+id      = "a-way-back"
+kind    = "soft"
+label   = "a way back"
+enabled = "switch"
+message = """
+Before executing a plan, decide what it would cost to undo and whether you can undo it.
+  high    hard to reverse: a rewrite, a migration, a rename across many files.
+          Archive first - a git commit or a tarball of the tree - and say where it is.
+  medium  reversible, but only with a way back. If this project has none (no version
+          control, no archive, no copy), ask the human for one before starting.
+  low     adding a file, editing a sentence. Nothing to say; just work."""
+unless  = "The human says to go ahead without one."
+
+[rule.if]
+occasion = "plan, act"
+
+# Split out of `plan-file`, which was off, injected nothing, and mixed two decisions in one switch.
+[[rule]]
+id      = "plan-write-file"
+kind    = "soft"
+label   = "the plan is written to a file"
 enabled = false
 message = """
-Fill the plan template into
-  .orchestrator/plan.md:
-type, summary, steps, tools, files, scope, deliverables, self-review.
-Every section specific enough to be followed directly,
-and read it back afterwards to confirm nothing in it is a guess."""
+The plan goes to
+  .orchestrator/plan.md,
+not into the conversation: it is read back before acting, and it is what `plan-schema` checks.
+Read it back afterwards and confirm nothing in it is a guess."""
 unless  = 'Skip when the human says "just give it to me" or "no file needed".'
 
 [rule.if]
 occasion = "plan"
+
+[[rule]]
+id      = "plan-template"
+kind    = "soft"
+label   = "fill the plan template"
+enabled = true
+message = """
+Shape the plan after
+  .github/assets/plan-template.md:
+type, summary, steps, tools, files, scope, deliverables, self-review.
+Every section specific enough to be followed directly."""
+unless  = 'Skip when the human says "just call it out" or "no sections needed".'
+
+[rule.if]
+occasion = "plan"
+
+[[rule]]
+id      = "report-template"
+kind    = "soft"
+label   = "fill the report template"
+enabled = true
+message = """
+Shape the delivery report after
+  .github/assets/report-template.md:
+plan against actual, open items, change list, counts, audit summary, verification status.
+The headings stay in English; fill every other line in the language the human is using.
+Give it in the conversation by default - a file only when the human asks for one."""
+unless  = 'Skip when the human says "just the summary" or "no report needed".'
+
+[rule.if]
+occasion = "act"
 
 [[rule]]
 id      = "grill-with-docs"

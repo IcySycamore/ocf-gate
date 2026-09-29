@@ -17,36 +17,124 @@ The glossary is in the appendix.
 
 The most common accident with an AI agent is not that it cannot do the work, but that it does not understand what the human meant.
 
-- Starts work before the requirement is clear, and what it delivers does not match what was expected
-- Edits files, sets up environments, creates directories, runs commands silently or retries forever, causes huge unrecoverable damage after an error, or overwrites comments and code the human wrote by hand - doing work outside the boundary it was given
-- Answers are poor: full of syntax, logic, factual and comprehension errors; hallucination, not answering the question, repetition, meaninglessness, over-explaining (raising the cost of understanding, slowing the reader down) or too shallow (burning too many tokens)
-- Output in the wrong format, the wrong language or the wrong style; work with no order, no plan, no report
+- **No shared understanding**: starts before the requirement is clear, so what it delivers does not match what was expected, burning time and tokens
+- **Out of bounds**: edits files, sets up environments, creates directories, runs commands silently or retries forever, causes unrecoverable damage after an error, overwrites comments and code the human wrote by hand
+- **Poor answers**: full of syntax, logic, factual and comprehension errors; hallucination, not answering the question, repetition, meaninglessness, over-explaining (raising the cost of understanding, slowing the reader down) or too shallow (burning too many tokens)
+- **Bad collaboration**: work with no order, no plan, no report; hard to hold a conversation with
+- **Chain-of-thought pollution**: technical detail written into a user-facing UI, the model's reasoning, its mistakes and its trade-offs written into comments, poor writing in the deliverable
+
+> Sometimes it is not the agent's fault: the human is too lazy, or does not know how, to write a good prompt
+> and to state the working elements clearly.
+> This system standardises and streamlines the human-agent workflow out of real project experience,
+> placing demands and limits on both sides, to reach the best collaboration and a better deliverable.
 
 ### Advantages
 
-| Feature                                                             | What it gives you                                                                                                                                                |
-| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A hard gate plus soft guidance**                                  | Hooks are designed to build the workflow and constrain the model's behaviour, and light guidance words focus the model's attention on what matters               |
-| **A light core**                                                    | A single .py file at the core, standard library only, cross-platform                                                                                             |
-| **Approval does not rest on understanding, and cannot be bypassed** | Only a human running the`approve` command in their own terminal can approve                                                                                      |
-| **The protected list**                                              | A protected directory limits the model's access to files, and self-protects the system                                                                           |
-| **A rules and configuration system**                                | 23 hard rules and 8 soft rules distilled from real project experience, managed conveniently as key-value toml, able to switch the whole system on or off at once |
-| **The terminal stays in the human's hands**                         | It blocks execution before approval, long commands, multi-statement chains, silenced output, interactive blocking, repeated execution and consecutive failures   |
-| **Auditable end to end**                                            | State transitions, authorizations and failures are all visible in`.orchestrator/journal.log`                                                                     |
-| **Classic tests built in**                                          | Self-checks at deployment, at the start of a conversation and on every rule reload, so the system never fails silently                                           |
-| **Easy to deploy, package and migrate**                             | Convenient to deploy; one command migrates the system and its state                                                                                              |
+| Feature                                                             | What it gives you                                                                                                                                                 |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A hard gate plus soft guidance**                                  | Hooks are designed to build the workflow and constrain the model's behaviour, and light guidance words focus the model's attention on what matters                |
+| **A light core**                                                    | A single .py file at the core, standard library only, cross-platform                                                                                              |
+| **Approval does not rest on understanding, and cannot be bypassed** | Only a human running the`approve` command in their own terminal can approve                                                                                       |
+| **The protected list**                                              | A protected directory limits the model's access to files, and self-protects the system                                                                            |
+| **A rules and configuration system**                                | 21 hard rules and 12 soft rules distilled from real project experience, managed conveniently as key-value toml, able to switch the whole system on or off at once |
+| **The terminal stays in the human's hands**                         | It blocks execution before approval, long commands, multi-statement chains, silenced output, interactive blocking, repeated execution and consecutive failures    |
+| **Auditable end to end**                                            | State transitions, authorizations and failures are all visible in`.orchestrator/journal.log`                                                                      |
+| **Classic tests built in**                                          | Self-checks at deployment, at the start of a conversation and on every rule reload, so the system never fails silently                                            |
+| **Easy to deploy, package and migrate**                             | Convenient to deploy; one command migrates the system and its state                                                                                               |
 
 Other features are for you to find!
+
+### What the system can do
+
+**The state flow** - who moves it, and which gates guard the move:
+
+```mermaid
+stateDiagram-v2
+    ready --> asking: the hook, on the human's first message
+    asking --> planning: the agent or the human's approve - gates context / docs-decision / grill-valid
+    planning --> executing: the human's approve only - gates plan-schema / zero-p0 / protected-list-clear / stack-env
+    executing --> reporting: the agent
+    reporting --> ready: the agent
+    planning --> asking: the human's reject
+    asking --> ready: the agent, on a turn that only asked a question
+    blocked: blocked - the agent declares it and leaves it, asking nobody
+```
+
+**The pre-configured rules.** Conditions and thresholds are in `.github/ocf/policy.toml`, or in the reference region of `work-control-flow.md` that `reload` renders.
+
+| Rule                       | Kind | What it does                                                                                                               | Default            |
+| -------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| `plan-file-writable`       | hard | Lets `.orchestrator/plan.md` be written - the artifact the gate itself asks for                                            | follows the switch |
+| `failure-budget`           | hard | After 2 consecutive failures - a non-zero exit code is counted for you - refuses commands until the human replies          | follows the switch |
+| `visual-tool`              | hard | Refuses every image and browser tool                                                                                       | follows the switch |
+| `visual-command`           | hard | Refuses screenshots, headless browsers and playwright on the command line                                                  | follows the switch |
+| `human-only-subcommand`    | hard | The agent may not call `approve` / `reload` / `protect` and the rest of the human's subcommands                            | follows the switch |
+| `advance-to-executing`     | hard | The agent may not advance the state to `executing`                                                                         | follows the switch |
+| `self-authorization-write` | hard | A human-only subcommand may not be written into a script file                                                              | follows the switch |
+| `unread-write-target`      | hard | The command writes, but where it writes could not be read                                                                  | follows the switch |
+| `touches-protected`        | hard | The action touches a path on the protected list                                                                            | follows the switch |
+| `command-too-long`         | hard | A command over 400 characters                                                                                              | follows the switch |
+| `too-many-statements`      | hard | More than 3 statements chained into one command                                                                            | follows the switch |
+| `silenced-output`          | hard | The command silences its output (`Out-Null` / `--quiet` / `/dev/null`)                                                     | follows the switch |
+| `interactive-command`      | hard | A command that can block on input or raise a dialog                                                                        | follows the switch |
+| `test-authorization`       | hard | Tests run without the human having asked                                                                                   | follows the switch |
+| `undeclared-env-command`   | hard | Installing or probing the toolchain before the environment is declared                                                     | follows the switch |
+| `destructive`              | hard | `rm -rf /`, `push --force`, `drop table` and the like                                                                      | follows the switch |
+| `undeclared-env-tool`      | hard | Installing packages, extensions or scaffolding before the environment is declared                                          | follows the switch |
+| `approval-required-write`  | hard | Editing a file outside an acting state needs approval                                                                      | follows the switch |
+| `approval-required-exec`   | hard | Running a command outside an acting state needs approval (a control-plane command is exempt)                               | follows the switch |
+| `approval-required-env`    | hard | Changing the environment outside an acting state needs approval                                                            | follows the switch |
+| `repeated-command`         | hard | The same command a third time asks the human                                                                               | follows the switch |
+| `intake-grilling`          | soft | The intake asks only what is genuinely missing, one question per turn                                                      | follows the switch |
+| `independent-audit`        | soft | A written plan goes to an independent audit; at zero P0 the `approve` command is handed over                               | follows the switch |
+| `no-screenshots`           | soft | Ask the human for a screenshot; when switched off, the vision tools are allowed instead                                    | follows the switch |
+| `beginner-mode`            | soft | Name every domain primitive and record it in the glossary; a vague request gets the three-part form                        | follows the switch |
+| `human-only-commands`      | soft | A human-only command is never run for the human                                                                            | follows the switch |
+| `write-for-the-reader`     | soft | Name the reader before writing into an artifact; your hesitation and guessed pitfalls stay in your memory                  | follows the switch |
+| `a-way-back`               | soft | Weigh what undoing would cost: archive first when it is high, and ask the human when it is medium and there is no way back | follows the switch |
+| `plan-write-file`          | soft | The plan goes to `.orchestrator/plan.md`                                                                                   | **off**            |
+| `plan-template`            | soft | The plan takes the sections of the template                                                                                | **on**             |
+| `report-template`          | soft | The report takes the sections of the template                                                                              | **on**             |
+| `grill-with-docs`          | soft | Read `CONTEXT.md` and `docs/adr/` before questioning                                                                       | follows the switch |
+| `question-is-not-a-task`   | soft | A turn that only asks a question hands the machine back to `ready`, on that turn alone                                     | follows the switch |
 
 ### Composition
 
 | Part                   | Where                             | What it does                                                                                                                                                                                                                                      |
 | ---------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **State machine**      | `TRANSITIONS` in `ocf.py`         | `ready → asking → planning → executing → reporting → ready`, by pass: `blocked`                                                                                                                                                                   |
+| **State machine**      | `TRANSITIONS` in `ocf.py`         | `ready → asking → planning → executing → reporting → ready`, bypass: `blocked`                                                                                                                                                                    |
 | **Command units**      | the command table in`ocf.py`      | The agent may use`status` / `set` / `gate` / `journal` / `fail` / `ok` / `advance` / `init` / `selftest` / `verify`; the human may use `approve` / `reject` / `protect` / `unprotect` / `reload` / `install` / `package`                          |
 | **Persistence**        | `.orchestrator/`                  | `state` the machine state, `facts` the distilled working elements, `glossary.md` the terms, `journal.log` the audit, `exec.log` the command-repeat record, `prompt-log` the intake record, `plan.md` the plan as a file, only when the human asks |
-| **Configurable rules** | `.github/ocf/policy.toml`         | 23 hard rules + 8 soft rules                                                                                                                                                                                                                      |
+| **Configurable rules** | `.github/ocf/policy.toml`         | 21 hard rules + 12 soft rules                                                                                                                                                                                                                     |
 | **VS Code hook**       | `.github/hooks/orchestrator.json` | Four events at`ocf.py hook`: SessionStart / UserPromptSubmit / PreToolUse / PostToolUse                                                                                                                                                           |
+
+### Project structure
+
+```text
+.
+├─ .github/                    the delivery unit: copy it into any repository root
+│  ├─ ocf/                     the one implementation and the one configuration
+│  │  ├─ ocf.py                state machine, gates, rule evaluator, hook entry
+│  │  ├─ policy.toml           rules as data: 33 of them, first match wins
+│  │  └─ tests/run.py          offline cases and structural checks (shipped)
+│  ├─ hooks/orchestrator.json  the wiring for four events (written by reload)
+│  ├─ agents/  prompts/        subagents and the human-facing skills
+│  ├─ assets/                  the plan and report templates
+│  ├─ protected.txt            the protected list
+│  ├─ copilot-instructions.md  the standing contract (generated region + rule text)
+│  └─ work-control-flow.md     the guide, with the reference region reload renders
+├─ .orchestrator/              runtime state
+│  ├─ state  facts             where the machine is, and the working elements
+│  ├─ journal.log  exec.log    the audit, and the command-repeat record
+│  └─ glossary.md  plan.md     the terms, and this round's plan
+├─ release/
+│  ├─ payload/                 the half that gets published
+│  └─ build/                   build.ps1 / engine_checks.py / ocf-gate.iss
+├─ dist/                       the artifacts: setup.exe and the staged tree
+├─ README.md  README_CH.md
+├─ POLICY-GUIDE.md  POLICY-GUIDE_CH.md
+└─ VERSION
+```
 
 ---
 
@@ -156,6 +244,18 @@ The human-facing skills this system provides: `/work-intake`, `/work-plan`, `/bu
   - carries out the plan
   - when it has to deviate from the plan: `advance blocked` and re-plan.
   - writes the report according to the template
+
+---
+
+## Future plans
+
+In order:
+
+1. **Tests**: close the coverage gaps - some hard rules still have no case; give every soft rule a countable trace, or mark it unmeasurable.
+2. **New and improved features** (long term): keep distilling rules and gates from real projects, and keep collapsing duplicates into one mechanism, one place.
+3. **Adapt to the DeepSeek harness**: stop depending on VS Code's hook events.
+4. **Adapt to Codex**: as above.
+5. **Publish as a VS Code extension**: replace "copy `.github/` into a repository" with a single install.
 
 ---
 

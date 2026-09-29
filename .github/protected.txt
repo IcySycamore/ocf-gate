@@ -1,13 +1,19 @@
 # Protected list - the machine never modifies any of these paths.
 # One glob per line, '#' starts a comment.
 # Human-written code and documents:
-
-docs/**
-
 # The orchestrator's own standing contract.
-
-.github/copilot-instructions.md
-
 # This file
-
+docs/**
+.github/copilot-instructions.md
 .github/protected.txt
+.github/hooks
+.github/ocf
+.github/agents
+.github/prompts
+.github/assets
+.github/work-control-flow.md
+.orchestrator/state
+.orchestrator/facts
+.orchestrator/journal.log
+.orchestrator/exec.log
+

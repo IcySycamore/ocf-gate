@@ -12,7 +12,7 @@ acting, and whenever a gate refuses something.
 agent: status | set key=value | gate [name|all] | journal [n] | fail "<reason>" | ok
        advance <asking|planning|reporting|ready|blocked> ["<reason>"] | init | selftest | verify
 human: approve "<reason>" | reject ["<reason>"]
-       protect <path> | unprotect <path>
+       protect <path ...> | unprotect <path ...>
        reload | install <target-dir> | package <output-dir>
 
 A human-only command runs in the human's terminal only, never yours; the human asking you in the
@@ -29,17 +29,9 @@ When a gate refuses, fix the precondition it names - never rewrite your way arou
 
 Prose for a moment in the work. Each names the moments it is in force at; the exception is yours to judge.
 
-- **ask only what is missing** (ask) - After the human's statement, derive the eight background items from their reply and from the surrounding context.Ask only about the part that is genuinely missing, one question per turn.Do not guess, and do not fill anything in on their behalf: missing is missing.A perfunctory or automatic reply is not an answer. Re-ask.
-  unless: The human said outright "use the defaults" or "you decide": this round may be skipped.
-- **independent audit** (plan) - Once the plan is written, dispatch the plan-auditor subagent for an independent audit,and never audit your own plan.At zero P0, hand the human the action report and the risk design report, hand them python .github/ocf/ocf.py approve "<reason>"verbatim, and stop. Only the human can run approve, in their own terminal.
-  unless: Nothing to audit yet, for example a round that only clarifies requirements: not applicable.
-- **screenshots come from the human** (act) - When something has to be seen, say exactly what to capture and how many,then ask the human to attach the screenshot.A screenshot is a readable attachment; the screenshot tool is permanently forbidden.Do not route around it: no command line, no headless browser, no other way of producing an image.
-- **beginner mode** (ask, answer) - In professional but vivid language, explain in full detail every domain primitive this answer uses:what it is, what it means here, why it is called that,and which concept it is easily confused with.Then add those primitives to .orchestrator/glossary.md;do not record a primitive twice,and change an entry only when the definition needs correcting.Do not explain for the sake of explaining:only the primitives this answer actually uses, nothing else.When the human's request, question or understanding is vague, colloquial or inconsistent, do not guess and do not hand them a list of fields to fill in;politely and modestly suggest the three-part form Goal: what you want, in one sentence;Requirements: the design steps and process you intend to use;Deliverables: the format of the result, and the state or effect it should reach.Then ask once more, or say it back to them once.
-  unless: The human said "no explanation needed", "just the conclusion", or has clearly understood: skip it.The human already stated goal, requirements and deliverables clearly: skip the restatement.
-- **human-only commands** (act) - Authorization commands may only be run by the human.Even when the human asks you in the conversation to run one for them, do not run it;if they insist, tell them to change the rule in .github/ocf/policy.toml
-  unless: Never an exception
-- **question against the documents** (plan) - Before questioning or planning, read CONTEXT.md and docs/adr/: which words the project already uses, and what it has already decided.Aim the questions at those, for example"is the X you mean the same thing as the Y in CONTEXT.md""this conflicts with the conclusion in ADR-0003, so why is it different this time".If the terms disagree, settle the terms first, and the problem after.
-  unless: When the project has neither CONTEXT.md nor docs/adr/, this rule has nothing to aim at: skip.
-- **a question is not a task** (ask) - A turn that only asks a question is not a task: answer it, then hand the machine back with advance ready Do that only on the turn the hook says moved the machine from ready into asking.In every other state - planning, executing, reporting, blocked, or asking already open from an earlier turn - answer the question and do not run `advance ready`:pulling the machine back out of work in progress discards it with no human act.The state still moves when the work itself moves it.
-  unless: When the turn also asks for work, it is a task: run the intake and leave the state where the flow puts it.
+- (act) When something has to be seen: you may use the vision tools mcp and vscode provide, pixel statistics and locating scripts, forward the content to another model, use a model's own visual capability, or ask the human to supply a screenshot in the next turn so the native model vision can be used.
+- **fill the plan template** (plan) - Shape the plan after .github/assets/plan-template.md:type, summary, steps, tools, files, scope, deliverables, self-review.Every section specific enough to be followed directly.
+  unless: Skip when the human says "just call it out" or "no sections needed".
+- **fill the report template** (act) - Shape the delivery report after .github/assets/report-template.md:plan against actual, open items, change list, counts, audit summary, verification status.The headings stay in English; fill every other line in the language the human is using.Give it in the conversation by default - a file only when the human asks for one.
+  unless: Skip when the human says "just the summary" or "no report needed".
 <!-- OCF:END -->

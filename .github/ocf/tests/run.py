@@ -332,7 +332,7 @@ def check_markdown_links():
     assert not problems, "broken relative links: %s" % "; ".join(problems)
 
 
-PROTECTED_BY_POLICY = (
+MUST_STAY_PROTECTED = (
     ".github/ocf/ocf.py",
     ".github/ocf/policy.toml",
     ".github/work-control-flow.md",
@@ -341,10 +341,55 @@ PROTECTED_BY_POLICY = (
     ".github/agents/orchestrator.agent.md",
     ".github/agents/plan-auditor.agent.md",
     ".github/prompts/work-plan.prompt.md",
+    # The two templates. They were covered by neither mechanism before: the self-protection regex
+    # listed hooks/ocf/agents/prompts and stopped at the directory above these, and the list did not
+    # mention them either. A template the machine can rewrite is a shape imposed on it, not on the
+    # plan.
+    ".github/assets/plan-template.md",
+    ".github/assets/report-template.md",
     # The list guards itself: without this entry the machine could empty it, and an empty list
     # protects nothing while every rule still reads as if it did.
     ".github/protected.txt",
 )
+
+
+def check_gate_files_protected():
+    """A rules document the machine may rewrite is not a rule.
+
+    Moving a file is easy and forgetting to protect it is also easy, and the failure mode is silent:
+    the gate keeps working while quietly becoming editable. So this pins BOTH ends.
+
+    One end is the list: every file that must stay protected has to be covered by an entry. The other
+    is the rule that reads the list. Checking only the list is the weaker test - a list that says the
+    right thing while the rule no longer consults it protects exactly nothing, and the check would
+    have gone on passing. So the rule is asserted to exist, to carry both classes, to be keyed on
+    `touches_protected`, and then `listed_in` is called for every path, which is the same judgement
+    the gate itself makes.
+
+    The policy is also asserted to have loaded cleanly, because the fallback policy would make this
+    check pass for the wrong reason.
+    """
+    ocf = load_ocf_module()
+    policy, warnings = ocf.load_policy(REPO)
+    for kind, text in warnings:
+        raise AssertionError("the policy did not load cleanly: [%s] %s" % (kind, text))
+    problems = []
+    rules = [rule for rule in policy.get("rule", []) if rule.get("id") == "touches-protected"]
+    if not rules:
+        problems.append("policy.toml has no touches-protected rule, so nothing reads the list")
+    else:
+        condition = rules[0].get("if") or {}
+        if not condition.get("touches_protected"):
+            problems.append("touches-protected does not use the touches_protected condition")
+        classes = ocf.comma_list(condition.get("class", ""))
+        for wanted in ("write", "exec"):
+            if wanted not in classes:
+                problems.append("touches-protected does not cover class %s" % wanted)
+    for path in MUST_STAY_PROTECTED:
+        if not ocf.listed_in(REPO, ocf.PROTECTED_LIST_REL, path):
+            problems.append("%s is covered by no entry in %s" % (path, ocf.PROTECTED_LIST_REL))
+    assert not problems, "%s. The machine could edit the orchestrator's own files unopposed." % \
+                         "; ".join(problems)
 
 
 def load_ocf_module():
@@ -354,137 +399,19 @@ def load_ocf_module():
     return module
 
 
-def check_gate_files_protected():
-    """A rules document the machine may rewrite is not a rule.
-
-    Moving a file is easy and forgetting the protection pattern is also easy, and the failure mode is
-    silent: the gate keeps working while quietly becoming editable. So assert the pattern by running it
-    against the files that must stay protected, and assert the policy loaded cleanly, because the
-    fallback policy would make this check pass for the wrong reason.
-    """
-    ocf = load_ocf_module()
-    policy, warnings = ocf.load_policy(REPO)
-    for kind, text in warnings:
-        raise AssertionError("the policy did not load cleanly: [%s] %s" % (kind, text))
-    problems = []
-    for rule_id in ("self-protection-path", "self-protection-write"):
-        rules = [rule for rule in policy.get("rule", []) if rule.get("id") == rule_id]
-        if not rules:
-            problems.append("policy.toml has no %s rule" % rule_id)
-            continue
-        # The pattern moved into the rule's condition table when the three rules were converted to the
-        # one shape. Read it from wherever it is rather than from a remembered field name: the field name
-        # is exactly what changed, and a check that reads a field nobody writes reports "no pattern"
-        # while the pattern is sitting right there.
-        rule = rules[0]
-        pattern = rule.get("match") or (rule.get("if") or {}).get("path_matches")
-        if not pattern:
-            problems.append("%s has no path pattern" % rule_id)
-            continue
-        for path in PROTECTED_BY_POLICY:
-            if not re.search(pattern, path, re.I):
-                problems.append("%s no longer covers %s" % (rule_id, path))
-    assert not problems, "%s. The machine could edit the orchestrator's own files unopposed." % \
-                         "; ".join(problems)
-
-
 def test_markdown_links():
     check_markdown_links()
 
 
-WORKFLOW = os.path.join(REPO, ".github", "work-control-flow.md")
-
-# The sections other files cite by number. A citation is a number, so renumbering the document silently
-# re-points every one of them and nothing complains: the agent simply follows the wrong section. The
-# titles below are what this check believes that document's numbering is, and they are compared with the
-# document on every run - so the list cannot drift, it can only be deliberately updated.
-CITED_SECTIONS = {2: "Commands", 5: "Intake", 6: "Planning and approval", 7: "Terminal discipline",
-                  8: "Delivery", 9: "Limits and switches", 10: "Known limitations"
-                  }
-SECTION_HEADING = re.compile(r"(?m)^##\s+(\d+)\.\s+(.+?)\s*$")
-CITATION = re.compile(r"section\s+(\d+)|\u7b2c\s*(\d+)\s*\u8282|\u00a7\s*(\d+)")
-
-
-def check_section_references():
-    """A citation by number outlives the numbering it was written against.
-
-    Every other cross-reference in this suite is a name or a path, which fails loudly when it moves.
-    A number does not: the document gains a section, everything after it shifts, and "see section 9"
-    quietly starts pointing at a different section - which is a silent failure of the same kind this
-    suite exists to catch. These documents are edited by whoever deploys the gate, so it is theirs too.
-    """
-    with open(WORKFLOW, "r", encoding="utf-8") as handle:
-        headings = {int(number): title for number, title in SECTION_HEADING.findall(handle.read())}
-    problems = []
-    if sorted(headings) != list(range(1, len(headings) + 1)):
-        problems.append("the sections are numbered %s, so no citation can be trusted to land"
-                        % ", ".join(str(number) for number in sorted(headings)))
-    for number, title in sorted(CITED_SECTIONS.items()):
-        if number not in headings:
-            problems.append("section %d (%s) is cited from other files and is gone" % (number, title))
-        elif headings[number] != title:
-            problems.append("section %d is %r, and the files citing it by number expect %r - a "
-                            "renumbering re-points every one of them"
-                            % (number, headings[number], title))
-    for path in iter_markdown_files():
-        with open(path, "r", encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-        for index, line in enumerate(lines, 1):
-            for groups in CITATION.findall(line):
-                number = int([group for group in groups if group][0])
-                if number not in headings:
-                    problems.append("%s:%d cites section %d, which does not exist"
-                                    % (os.path.relpath(path, REPO), index, number))
-    assert not problems, "; ".join(problems)
-
-
-def test_section_references():
-    check_section_references()
+# The section-reference and ASCII checks are in release/build/engine_checks.py: they assert this
+# repository's own conventions, and this file ships to people who never agreed to them.
 
 
 def test_gate_files_protected():
     check_gate_files_protected()
 
 
-def scan_non_ascii():
-    """Return .github-relative paths that hold non-ASCII bytes.
-
-    A leading BOM is stripped first: it is an encoding mark rather than content, and the previous
-    PowerShell implementation genuinely needed one. Build output is skipped, because a .pyc is not
-    source.
-    """
-    offenders = []
-    for folder, folders, files in os.walk(os.path.join(REPO, ".github")):
-        folders[:] = [name for name in folders if name not in ("__pycache__", ".pytest_cache")]
-        for name in files:
-            path = os.path.join(folder, name)
-            relative = os.path.relpath(path, REPO).replace("\\", "/")
-            with open(path, "rb") as handle:
-                data = handle.read()
-            if data.startswith(b"\xef\xbb\xbf"):
-                data = data[3:]
-            if any(byte > 127 for byte in data):
-                offenders.append(relative)
-    return offenders
-
-
-# The ASCII rule keeps a class of encoding bugs out of code and out of everything the toolchain
-# touches: a file the toolchain reads is a file the toolchain has to encode consistently. Nothing under
-# .github is exempt, and the list being empty is the point - a suffixed or folder-wide exemption has a
-# convenient way around it, while a new file that wants one has to argue for itself in a diff. The two
-# documents written in the project's own language, README.md and POLICY-GUIDE.md, live at the repository
-# root, outside the folder this scan walks.
-NON_ASCII_ALLOWED = ()
-
-
-def test_repo_is_ascii():
-    """Every file under .github is ASCII."""
-    offenders = [path for path in scan_non_ascii() if path not in NON_ASCII_ALLOWED]
-    assert not offenders, ("non-ASCII bytes in: %s. Nothing under .github is exempt"
-                           % ", ".join(offenders))
-
-
-def check_plan_template():
+def check_plan_template_matches_schema():
     """The template the plan is written on must satisfy the schema that will judge the plan.
 
     These two drifted apart once already: the template's headings were Chinese while PLAN_HEADINGS
@@ -508,8 +435,8 @@ def check_plan_template():
                           "shape: %s" % "; ".join(problems))
 
 
-def test_plan_template():
-    check_plan_template()
+def test_plan_template_matches_schema():
+    check_plan_template_matches_schema()
 
 
 def check_policy_vocabulary():
@@ -659,7 +586,7 @@ def check_generated_region(ocf, policy, artifact, must_contain):
            _first_difference(text[start:stop], block)))
 
 
-def check_generated_instructions():
+def check_generated_contract():
     """The written contract must equal what the policy renders, and half a region must be refused."""
     ocf = load_ocf_module()
     policy, _ = ocf.load_policy(REPO)
@@ -667,7 +594,7 @@ def check_generated_instructions():
                            "the soft rules reach the model only through that region")
 
 
-def check_vocabulary_region():
+def check_generated_vocabulary():
     """The policy file must document exactly the identifiers the engine reads - both directions.
 
     One half is the region on disk matching the renderer. The other is the vocabulary itself: a key the
@@ -702,7 +629,7 @@ def check_vocabulary_region():
                            "the vocabulary region is what documents the policy's interface")
 
 
-def check_reference_region():
+def check_generated_reference():
     """The generated half of the rules document must exist and cover every gate.
 
     A separate function from the vocabulary check on purpose: both end in a call that raises when the
@@ -725,16 +652,16 @@ def check_reference_region():
                            "the reference region is what makes the rules document true")
 
 
-def test_generated_instructions():
-    check_generated_instructions()
+def test_generated_contract():
+    check_generated_contract()
 
 
-def test_vocabulary_region():
-    check_vocabulary_region()
+def test_generated_vocabulary():
+    check_generated_vocabulary()
 
 
-def test_reference_region():
-    check_reference_region()
+def test_generated_reference():
+    check_generated_reference()
 
 
 def check_hooks_wiring():
@@ -802,7 +729,7 @@ def check_class_names_are_known():
     """Every class a rule names must be one the engine knows, and an unknown one must raise.
 
     This is how `edit` became `write`: the engine's list changed, two rules kept the old name, and both
-    of them quietly stopped applying - `protected-file` went from refusing to allowing. The validator
+    of them quietly stopped applying - `touches-protected` went from refusing to allowing. The validator
     reported it, but the new-shape evaluator did not raise, so nothing forced the issue; only reading the
     output did. Two halves here: the shipped policy must contain no unknown class name, and the
     evaluator must refuse one rather than compare it unequal and return.
@@ -985,25 +912,20 @@ def test_verify_catches_a_broken_install():
 # protected list, their templates, the prose they edit. Every check here answers a question they can act
 # on, in words they have a reason to know.
 #
-# The checks on the engine itself - the transition table, the gates table, the rule shape, the soft-rule
-# skip, line endings, rule text flattening, the human-only commands, installing, packaging, the prompt
-# log - are in `release/build/engine_checks.py` instead, which is not shipped because only someone
-# editing ocf.py can be bitten by them. They used to be here, and this file travels inside the payload,
-# so shipping them meant handing every user a list of ways THEY could not possibly have gone wrong.
+# Checks that are not about what the gate does for its users - the engine's own tables, and this
+# repository's own writing rules - live in release/build/engine_checks.py, which is not shipped.
 CHECKS = (
-    ("repo-ascii", test_repo_is_ascii),
-    ("plan-template", test_plan_template),
+    ("plan-template-matches-schema", test_plan_template_matches_schema),
     ("policy-vocabulary", test_policy_vocabulary),
     ("hooks-wiring", test_hooks_wiring),
     ("class-names-known", test_class_names_are_known),
     ("human-only-vocabulary", test_human_only_vocabulary),
     ("install-keeps-the-humans-files", test_install_keeps_the_humans_files),
     ("verify-catches-a-broken-install", test_verify_catches_a_broken_install),
-    ("generated-instructions", test_generated_instructions),
-    ("vocabulary-region", test_vocabulary_region),
-    ("reference-region", test_reference_region),
+    ("generated-contract", test_generated_contract),
+    ("generated-vocabulary", test_generated_vocabulary),
+    ("generated-reference", test_generated_reference),
     ("markdown-links", test_markdown_links),
-    ("section-references", test_section_references),
     ("agent-cross-references", test_agent_cross_references),
     ("gate-files-protected", test_gate_files_protected),
 )
