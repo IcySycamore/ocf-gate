@@ -11,6 +11,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4B5563">
   <img alt="Host" src="https://img.shields.io/badge/Host-VS%20Code%20Copilot%20Chat-007ACC?logo=visualstudiocode&logoColor=white">
   <img alt="Dependencies" src="https://img.shields.io/badge/Dependencies-stdlib%20only-success">
+  <a href="https://github.com/IcySycamore/ocf-gate"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-IcySycamore%2Focf--gate-181717?logo=github&logoColor=white"></a>
 </p>
 
 [English](README.md) · [**中文**](README_CH.md)
@@ -431,7 +432,7 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 ### 联系方式
 
 - 如果您有意见和问题、使用体验和 bug 反馈，欢迎发送至 **liwenhu2y@outlook.com** ;)
-- 或提交 issue / discussion 到 [GitHub]()
+- 或提交 issue / discussion 到 [GitHub](https://github.com/IcySycamore/ocf-gate)
 
 ### 术语表
 
