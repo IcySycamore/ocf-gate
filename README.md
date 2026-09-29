@@ -249,15 +249,23 @@ The human-facing skills this system provides: `/work-intake`, `/work-plan`, `/bu
 
 ## Experimental
 
-**Reader judgement test (experimental)** - `release/build/reader_eval.py`
+**Reader judgement test**
 
-It measures a **model**, not the gate: hand it the 50 simulated tasks in [`EXAMPLES_CH.md`](EXAMPLES_CH.md) and see whether it names the reader of each artifact the way `write-for-the-reader` asks.
+Before switching `write-for-the-reader` on, you can measure the model first.
 
-- **It is its own entry point and is never run at the start of a conversation**, and it is not in either suite. Session start runs the self-check (environment / policy / hooks / canaries), which needs no model; this needs one in the loop, so it is a measurement you ask for rather than one that runs itself.
-- To use it: `python release\build\reader_eval.py` prints the prompt; save what the model answered as JSON, then `python release\build\reader_eval.py --answers answers.json` prints the accuracy and every MISS.
-- The judgements are in `release/build/reader-cases.json` (reader, reason, and whether the case is a boundary one). `--selftest` proves the scorer **can fail** before anyone reads a percentage.
+50 model scenarios are prepared; the model names the reader of each artifact, following
+`write-for-the-reader`.
 
-**Why it is marked experimental**: it measures **violations and deviations, not quality**, and the standard is 50 hand-written cases that do not claim to cover your project.
+- **It is its own entry point and is never run at the start of a conversation**, and it is not in
+  either suite.
+- **Who does what**: this is a **manual two-step**, not a mechanism that runs itself - the script
+  does not call a model and cannot; it only sets the questions and scores the answers.
+  1. Run `python release\build\reader_eval.py` and take the questions (with the rule text).
+  2. Hand the questions to **the model you want to measure**, and save its answers as JSON in the
+     format the script prints.
+  3. Run `python release\build\reader_eval.py --answers answers.json` for the accuracy and every MISS.
+- The judgements are in `release/build/reader-cases.json`; `--selftest` proves the scorer can fail
+  before anyone reads a percentage.
 
 ---
 

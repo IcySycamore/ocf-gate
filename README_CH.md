@@ -252,26 +252,33 @@ python .github\ocf\ocf.py selftest    # 门禁状态验证
 
 ## 实验性内容
 
-**读者判断测试（实验）** —— `release/build/reader_eval.py`
+**读者判断测试**
 
-50条模型使用场景
-模型能不能按 `write-for-the-reader` 认出每件交付物的读者。
+在开启`write-for-the-reader`前，您可以先对模型能力进行测试
 
-- 用法：`python release\build\reader_eval.py` 打印题面；把模型的答案存成 JSON，再 `python release\build\reader_eval.py --answers answers.json` 打印准确率与逐条 MISS。
-- 判定写在 `release/build/reader-cases.json`（每条：读者、理由、是否边界情形）。`--selftest` 先证明打分器**会失败**，再谈百分比。
+我们预设了50条模型使用场景
+模型将按 `write-for-the-reader` 分辨每件交付物的目标群体。
 
+- **它是独立入口，不在会话开始时运行**，也不在两套件里。
+- **谁做、做什么**：这一步是**手工两步**，不是一个能自己跑的机制——脚本不会调用模型，也调不了；它只负责出题和打分。
+  1. 执行 `python release\build\reader_eval.py`，拿到题面（含规则原文）；
+  2. 把题面交给**你要测的那个模型**，按脚本给出的格式把它的回答存成 JSON；
+  3. 执行 `python release\build\reader_eval.py --answers answers.json`，得到准确率与逐条 MISS。
+- 判定标准在 `release/build/reader-cases.json`；`--selftest` 先证明打分器会失败，再谈百分比。
 
 ---
 
 ## 未来计划
 
-| 顺序 | 事项                             | 说明                                                       |
-| ---- | -------------------------------- | ---------------------------------------------------------- |
-| 1    | **测试**                   | 补齐硬规则用例覆盖缺口；实现软规则效果量化或正式标为不可测 |
-| 2    | **添加和优化功能**（长期） | 持续从收集到的建议提炼规则与门禁                           |
-| 3    | **适配 DeepSeek harness**  | 让门禁不再依赖 VS Code 的 hook 事件                        |
-| 4    | **适配 Codex**             | 同上                                                       |
-| 5    | **作为 VS Code 插件发布**  | —                                                         |
+按顺序...
+
+| 事项                             | 说明                                                       |
+| -------------------------------- | ---------------------------------------------------------- |
+| **测试**                   | 补齐硬规则用例覆盖缺口；实现软规则效果量化或正式标为不可测 |
+| **添加和优化功能**（长期） | 持续从收集到的建议提炼规则与门禁                           |
+| **适配 DeepSeek harness**  | 让门禁不再依赖 VS Code 的 hook 事件                        |
+| **适配 Codex**             | 同上                                                       |
+| **作为 VS Code 插件发布**  | —                                                         |
 
 ---
 
