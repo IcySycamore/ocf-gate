@@ -90,19 +90,22 @@ How the transitions work: which part of the system performs them · and when
 
 ```mermaid
 stateDiagram-v2
-    ready --> asking: hook, 当 human 在 ready 发送消息时
-    asking --> planning: agent or human, 当 agent 认为追问结束且工作要素齐全，或人类直接 approve（never recommended）时
-    planning --> executing: human, 当 human approve 且计划要素齐全时
-    executing --> reporting: agent, 当 agent 执行计划后
-    reporting --> ready: agent, 当 agent 报告工作后
-    planning --> asking: human, 当 human reject plan 时
-    asking --> ready: agent, 当 human 只是提问而非安排任务
+ready --> asking: hook, when the human sends a message
+asking --> ready: agent, when the human only asks questions
+asking --> planning: agent or human, when the agent believes follow-up questions are over and all necessary elements are in place, or when the human directly approves (never recommended)
+planning --> executing: human, when the human approves and all planning elements are in place
+executing --> reporting: agent, when the agent executes the plan
+reporting --> ready: agent, when the agent reports the work
+planning --> asking: human, when the human rejects the plan
+
 ```
 
 > [!NOTE]
 >
 > - When the agent believes, or the system in fact hits, a block, it moves from any state to `blocked`; when the agent believes the block is resolved, it leaves.
-> - You may change the state machine to suit your needs. ⚠️ A more complex state machine and more sub-agent identities may bring too much time and cost overhead, and a distracted model may make the result worse than the design expected.
+
+> [!CAUTION]
+> - You may change the state machine to suit your needs.  A more complex state machine and more sub-agent identities may bring too much time and cost overhead, and a distracted model may make the result worse than the design expected.
 
 ---
 
@@ -424,7 +427,7 @@ Deleting `.github/hooks/` and `.orchestrator/` stops all enforcement.
 
 The remaining limitations are in the _Known limitations_ section of `.github/work-control-flow.md`.
 
-> [!INFO] Info
+> [!NOTE]
 > And...
 >
 > You must, absolutely must, be patient with the agent. Do not lose your temper at the agent's "stupidity" and so lower the quality of your own prompt.
@@ -458,7 +461,7 @@ The remaining limitations are in the _Known limitations_ section of `.github/wor
 
 <div align="center">
 
-**⭐ 如果这个项目对你有帮助，欢迎 Star 支持 ⭐**
+**⭐ If this project is helpful, give it a star to show your support PLZ!! ⭐**
 
 <sub>Made with ❤️ for better human–agent collaboration</sub>
 
