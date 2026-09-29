@@ -1,13 +1,15 @@
-"""Score a model's reader judgement against the cases in EXAMPLES_CH.md.
+"""Measure a model's reader judgement against the cases in EXAMPLES_CH.md.
 
-Not in the shipped payload, and not in the engine checks either: this one cannot run without a model
-in the loop, so it is a measurement, not a test. `emit` prints what to hand a model; `score` reads
-what it answered; `selftest` proves the scorer can fail before anyone trusts its percentage.
+Experimental, and deliberately its own entry point: it is never run at the start of a conversation,
+and it is not in the two suites. Session start runs the self-check - environment, policy, hooks,
+canaries - which needs no model. This one cannot run without a model, so it is a measurement you ask
+for, not a check that runs itself.
 
-    python release/build/reader_eval.py check                 is the case set well formed
-    python release/build/reader_eval.py emit                  the prompt to hand a model
-    python release/build/reader_eval.py score answers.json    score what a model answered
-    python release/build/reader_eval.py selftest              prove the scorer can fail
+    python release/build/reader_eval.py                    check the case set, then print the prompt
+    python release/build/reader_eval.py --answers a.json    score what a model answered
+    python release/build/reader_eval.py --selftest          prove the scorer can fail
+
+The judgements are in reader-cases.json: one reader, and the reason for it, per task in EXAMPLES_CH.md.
 """
 import json
 import os
@@ -128,29 +130,31 @@ def selftest():
 
 
 def main(argv):
-    if not argv:
+    """One entry point. Bare, it checks the case set and prints the prompt; --answers scores it."""
+    answers = None
+    if argv and argv[0] == "--selftest":
+        return selftest()
+    if argv and argv[0] == "--answers":
+        if len(argv) < 2:
+            print("--answers needs a file of answers")
+            return 2
+        answers = json.loads(read_text(argv[1]))
+    elif argv:
         print(__doc__.strip())
-        return 0
-    command = argv[0]
-    if command == "check":
-        problems = check()
-        for problem in problems:
-            print("  %s" % problem)
-        print("%d problem(s)" % len(problems))
-        return 1 if problems else 0
-    if command == "emit":
+        return 2
+    problems = check()
+    for problem in problems:
+        print("  %s" % problem)
+    print("%d problem(s)" % len(problems))
+    if problems:
+        return 1
+    if answers is None:
+        print()
         emit()
         return 0
-    if command == "score":
-        if len(argv) < 2:
-            print("score needs a file of answers")
-            return 2
-        good, total = score(json.loads(read_text(argv[1])))
-        return 0 if good == total else 1
-    if command == "selftest":
-        return selftest()
-    print("unknown command: %s" % command)
-    return 2
+    print()
+    good, total = score(answers)
+    return 0 if good == total else 1
 
 
 if __name__ == "__main__":

@@ -247,15 +247,29 @@ The human-facing skills this system provides: `/work-intake`, `/work-plan`, `/bu
 
 ---
 
+## Experimental
+
+**Reader judgement test (experimental)** - `release/build/reader_eval.py`
+
+It measures a **model**, not the gate: hand it the 50 simulated tasks in [`EXAMPLES_CH.md`](EXAMPLES_CH.md) and see whether it names the reader of each artifact the way `write-for-the-reader` asks.
+
+- **It is its own entry point and is never run at the start of a conversation**, and it is not in either suite. Session start runs the self-check (environment / policy / hooks / canaries), which needs no model; this needs one in the loop, so it is a measurement you ask for rather than one that runs itself.
+- To use it: `python release\build\reader_eval.py` prints the prompt; save what the model answered as JSON, then `python release\build\reader_eval.py --answers answers.json` prints the accuracy and every MISS.
+- The judgements are in `release/build/reader-cases.json` (reader, reason, and whether the case is a boundary one). `--selftest` proves the scorer **can fail** before anyone reads a percentage.
+
+**Why it is marked experimental**: it measures **violations and deviations, not quality**, and the standard is 50 hand-written cases that do not claim to cover your project.
+
+---
+
 ## Future plans
 
-| Order | Item | Notes |
-| --- | --- | --- |
-| 1 | **Tests** | Close the coverage gaps for the hard rules; measure the soft rules, or mark them unmeasurable |
-| 2 | **New and improved features** (long term) | Keep distilling rules and gates from the suggestions that come in |
-| 3 | **Adapt to the DeepSeek harness** | Stop depending on VS Code's hook events |
-| 4 | **Adapt to Codex** | As above |
-| 5 | **Publish as a VS Code extension** | — |
+| Order | Item                                      | Notes                                                                                         |
+| ----- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
+| 1     | **Tests**                                 | Close the coverage gaps for the hard rules; measure the soft rules, or mark them unmeasurable |
+| 2     | **New and improved features** (long term) | Keep distilling rules and gates from the suggestions that come in                             |
+| 3     | **Adapt to the DeepSeek harness**         | Stop depending on VS Code's hook events                                                       |
+| 4     | **Adapt to Codex**                        | As above                                                                                      |
+| 5     | **Publish as a VS Code extension**        | —                                                                                             |
 
 ---
 
@@ -331,16 +345,16 @@ Others
 
 ### Common failures
 
-| Symptom                                                                          | Root cause                                                                                     | What to do                                                                   |
-| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| The hook does nothing at all                                                     | Configuration not hot-reloaded                                                                 | Reload the window; check`Developer: Show Agent Debug Logs`                   |
-| The self-check reports an environment finding: the hooks do not point at`ocf.py` | The agent did not pick Work Orchestrator, the hook is broken, or the interpreter name is wrong | Fix`orchestrator.json` and reload                                            |
-| The self-check reports a policy finding                                          | Policy missing or unparseable                                                                  | See "Self-rescue"                                                            |
-| The self-check reports a system finding                                          | A canary failed, so the gate is no longer enforcing the policy                                 | **The most serious one.** Fix the policy as directed; do not route around it |
-| The hook errors saying`$f` became empty in a command                             | The hooks command string was interpolated by the outer shell                                   | Remove every `$` from that string                                            |
-| The gate keeps blocking the agent's file edits                                   | The state is not`executing` / `reporting`                                                      | Go through intake and planning, then run`approve` in your terminal           |
-| A policy change has no effect                                                    | You edited a different file                                                                    | The policy file is`.github/ocf/policy.toml`; `status` prints it              |
-| A generated-region assertion goes red, but the difference is one blank line       | An editor or formatter touched the generated region on save (most often padding a blank line after the HTML comment) | Run `reload` once - it compares the whole region and flattens the difference. If it goes red again immediately, something adds it on **every** save: make that tool skip the region rather than reloading in a loop |
+| Symptom                                                                          | Root cause                                                                                     | What to do                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The hook does nothing at all                                                     | Configuration not hot-reloaded                                                                 | Reload the window; check`Developer: Show Agent Debug Logs`                                                                                                                                                          |
+| The self-check reports an environment finding: the hooks do not point at`ocf.py` | The agent did not pick Work Orchestrator, the hook is broken, or the interpreter name is wrong | Fix`orchestrator.json` and reload                                                                                                                                                                                   |
+| The self-check reports a policy finding                                          | Policy missing or unparseable                                                                  | See "Self-rescue"                                                                                                                                                                                                   |
+| The self-check reports a system finding                                          | A canary failed, so the gate is no longer enforcing the policy                                 | **The most serious one.** Fix the policy as directed; do not route around it                                                                                                                                        |
+| The hook errors saying`$f` became empty in a command                             | The hooks command string was interpolated by the outer shell                                   | Remove every `$` from that string                                                                                                                                                                                   |
+| The gate keeps blocking the agent's file edits                                   | The state is not`executing` / `reporting`                                                      | Go through intake and planning, then run`approve` in your terminal                                                                                                                                                  |
+| A policy change has no effect                                                    | You edited a different file                                                                    | The policy file is`.github/ocf/policy.toml`; `status` prints it                                                                                                                                                     |
+| A generated-region assertion goes red, but the difference is one blank line      | An editor or formatter touched the generated region on save                                    | Run `reload` once - it compares the whole region and flattens the difference. If it goes red again immediately, something adds it on **every** save: make that tool skip the region rather than reloading in a loop |
 
 ### Design trade-offs and common questions
 
