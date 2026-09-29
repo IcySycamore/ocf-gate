@@ -65,41 +65,41 @@ stateDiagram-v2
 
 ### 预配置规则
 
-| 名称                         | 种类 | 内容                                                              | 默认     |
-| ---------------------------- | ---- | ----------------------------------------------------------------- | -------- |
-| `plan-file-writable`       | 硬   | 允许将每轮计划保存为文件                                          | 跟随开关 |
-| `failure-budget`           | 硬   | 连续失败到上限就阻塞，等人类指令                                  | 跟随开关 |
-| `visual-tool`              | 硬   | 禁用视觉工具                                                      | 跟随开关 |
-| `visual-command`           | 硬   | 禁用视觉命令                                                      | 跟随开关 |
-| `human-only-subcommand`    | 硬   | 不允许agent代行人类命令                                           | 跟随开关 |
-| `advance-to-executing`     | 硬   | 不允许agent进入`executing`状态                                  | 跟随开关 |
-| `self-authorization-write` | 硬   | 不允许agent创建人类命令脚本                                       | 跟随开关 |
-| `unread-write-target`      | 硬   | 禁用无法解析目标路径的修改型命令(测试)                            | 跟随开关 |
-| `touches-protected`        | 硬   | 不允许修改保护清单中的文件(依赖目标路径解析)                      | 跟随开关 |
-| `command-too-long`         | 硬   | 不允许命令字符量超限                                              | 跟随开关 |
-| `too-many-statements`      | 硬   | 不允许命令语句量超限(测试)                                        | 跟随开关 |
-| `silenced-output`          | 硬   | 不允许终端静默命令                                                | 跟随开关 |
-| `interactive-command`      | 硬   | 不允许交互式命令                                                  | 跟随开关 |
-| `test-authorization`       | 硬   | 不允许未授权测试                                                  | 跟随开关 |
-| `undeclared-env-command`   | 硬   | 不允许人类未声明环境时装依赖或探测工具链                          | 跟随开关 |
-| `destructive`              | 硬   | 不允许破坏性命令(测试)                                            | 跟随开关 |
-| `undeclared-env-tool`      | 硬   | 不允许环境未声明时装包 / 装扩展 / 脚手架                          | 跟随开关 |
-| `approval-required-write`  | 硬   | 非执行状态下修改文件要求批准                                      | 跟随开关 |
-| `approval-required-exec`   | 硬   | 非执行状态下执行命令要求批准（只看控制面时豁免）                  | 跟随开关 |
-| `approval-required-env`    | 硬   | 非执行状态下变更环境要求批准                                      | 跟随开关 |
-| `repeated-command`         | 硬   | 重复命令超限时阻塞，等待人类指令                                  | 跟随开关 |
-| `intake-grilling`          | 软   | 受理环节一次一问，优化追问                                        | 跟随开关 |
-| `independent-audit`        | 软   | 计划独立审计至P0归零并请求人类命令批准                            | 跟随开关 |
-| `no-screenshots`           | 软   | 不允许视觉工具(关闭时推荐指定视觉实践形式)                        | 跟随开关 |
-| `beginner-mode`            | 软   | 讲清每个领域原语并落到术语表；请求含糊时用三段式反问              | 跟随开关 |
-| `human-only-commands`      | 软   | 不允许agent代行人类命令                                           | 跟随开关 |
-| `write-for-the-reader`     | 软   | 引导agent留白并根据目标群体优化交付物中的文本(测试，依赖模型质量) | 跟随开关 |
-| `a-way-back`               | 软   | 引导agent在中高风险时保留存档或回档方式                           | 跟随开关 |
-| `plan-write-file`          | 软   | 将计划作为文件提供                                                | 关       |
-| `plan-template`            | 软   | 使用推荐模板撰写计划                                              | 开       |
-| `report-template`          | 软   | 使用推荐模板撰写报告                                              | 开       |
-| `grill-with-docs`          | 软   | 根据`CONTEXT.md` 与 `docs/adr/`追问                           | 跟随开关 |
-| `question-is-not-a-task`   | 软   | 当人类仅提问时，问题解决后返回ready                               | 跟随开关 |
+| 名称                         | 种类 | 内容                                                                | 默认     |
+| ---------------------------- | ---- | ------------------------------------------------------------------- | -------- |
+| `plan-file-writable`       | 硬   | 允许将每轮计划保存为文件                                            | 跟随开关 |
+| `failure-budget`           | 硬   | 连续失败到上限就阻塞，等人类指令                                    | 跟随开关 |
+| `visual-tool`              | 硬   | 禁用视觉工具                                                        | 跟随开关 |
+| `visual-command`           | 硬   | 禁用视觉命令                                                        | 跟随开关 |
+| `human-only-subcommand`    | 硬   | 不允许agent代行人类命令                                             | 跟随开关 |
+| `advance-to-executing`     | 硬   | 不允许agent进入`executing`状态                                    | 跟随开关 |
+| `self-authorization-write` | 硬   | 不允许agent创建人类命令脚本                                         | 跟随开关 |
+| `unread-write-target`      | 硬   | 禁用无法解析目标路径的修改型命令(实验性)                            | 跟随开关 |
+| `touches-protected`        | 硬   | 不允许修改保护清单中的文件(依赖目标路径解析)                        | 跟随开关 |
+| `command-too-long`         | 硬   | 不允许命令字符量超限                                                | 跟随开关 |
+| `too-many-statements`      | 硬   | 不允许命令语句量超限(实验性)                                        | 跟随开关 |
+| `silenced-output`          | 硬   | 不允许终端静默命令                                                  | 跟随开关 |
+| `interactive-command`      | 硬   | 不允许交互式命令                                                    | 跟随开关 |
+| `test-authorization`       | 硬   | 不允许未授权测试                                                    | 跟随开关 |
+| `undeclared-env-command`   | 硬   | 不允许人类未声明环境时装依赖或探测工具链                            | 跟随开关 |
+| `destructive`              | 硬   | 不允许破坏性命令(实验性)                                            | 跟随开关 |
+| `undeclared-env-tool`      | 硬   | 不允许环境未声明时装包 / 装扩展 / 脚手架                            | 跟随开关 |
+| `approval-required-write`  | 硬   | 非执行状态下修改文件要求批准                                        | 跟随开关 |
+| `approval-required-exec`   | 硬   | 非执行状态下执行命令要求批准（只看控制面时豁免）                    | 跟随开关 |
+| `approval-required-env`    | 硬   | 非执行状态下变更环境要求批准                                        | 跟随开关 |
+| `repeated-command`         | 硬   | 重复命令超限时阻塞，等待人类指令                                    | 跟随开关 |
+| `intake-grilling`          | 软   | 受理环节一次一问，优化追问                                          | 跟随开关 |
+| `independent-audit`        | 软   | 计划独立审计至P0归零并请求人类命令批准                              | 跟随开关 |
+| `no-screenshots`           | 软   | 不允许视觉工具(关闭时推荐指定视觉实践形式)                          | 跟随开关 |
+| `beginner-mode`            | 软   | 讲清每个领域原语并落到术语表；请求含糊时用三段式反问                | 跟随开关 |
+| `human-only-commands`      | 软   | 不允许agent代行人类命令                                             | 跟随开关 |
+| `write-for-the-reader`     | 软   | 引导agent留白并根据目标群体优化交付物中的文本(实验性，依赖模型质量) | 跟随开关 |
+| `a-way-back`               | 软   | 引导agent在中高风险时保留存档或回档方式                             | 跟随开关 |
+| `plan-write-file`          | 软   | 将计划作为文件提供                                                  | 关       |
+| `plan-template`            | 软   | 使用推荐模板撰写计划                                                | 开       |
+| `report-template`          | 软   | 使用推荐模板撰写报告                                                | 开       |
+| `grill-with-docs`          | 软   | 根据`CONTEXT.md` 与 `docs/adr/`追问                             | 跟随开关 |
+| `question-is-not-a-task`   | 软   | 当人类仅提问时，问题解决后返回ready                                 | 跟随开关 |
 
 ### 项目组成
 
@@ -257,14 +257,13 @@ python .github\ocf\ocf.py selftest    # 门禁状态验证
 在开启`write-for-the-reader`前，您可以先对模型能力进行测试
 
 我们预设了50条模型使用场景
-模型将按 `write-for-the-reader` 分辨每件交付物的目标群体。
+模型将按 `write-for-the-reader` 分辨每件交付物的目标群体(读者)。
 
-- **它是独立入口，不在会话开始时运行**，也不在两套件里。
-- **谁做、做什么**：这一步是**手工两步**，不是一个能自己跑的机制——脚本不会调用模型，也调不了；它只负责出题和打分。
-  1. 执行 `python release\build\reader_eval.py`，拿到题面（含规则原文）；
-  2. 把题面交给**你要测的那个模型**，按脚本给出的格式把它的回答存成 JSON；
-  3. 执行 `python release\build\reader_eval.py --answers answers.json`，得到准确率与逐条 MISS。
-- 判定标准在 `release/build/reader-cases.json`；`--selftest` 先证明打分器会失败，再谈百分比。
+**HOW TO**
+
+1. 执行 `python release\build\reader_eval.py`，拿到题面；
+2. 把题面发给**你要测的那个模型**，按脚本给出的格式把它的回答存成 JSON；
+3. 执行 `python release\build\reader_eval.py --answers <file_name>.json`，得到准确率与逐条 MISS。
 
 ---
 
@@ -354,18 +353,15 @@ python .github\ocf\ocf.py selftest    # 门禁状态验证
 
 ### 常见故障
 
-| 症状                                      | 根因                                    | 处理                                                       |
-| ----------------------------------------- | --------------------------------------- | ---------------------------------------------------------- |
-| hook 完全没反应                           | 配置未热加载                            | 重载窗口；查`Developer: Show Agent Debug Logs`           |
-| 自检报环境类问题： hooks 未指向`ocf.py` | agent没选Work Orchestrator、hook失效    | 选对应agent或改`orchestrator.json` 后重载                |
-| 自检报策略类问题                          | 策略缺失或解析失败                      | 见「故障自救」                                             |
-| 自检报系统类问题                          | 金丝雀未通过 = 门禁不再执行策略         | **最严重**。按提示修策略，不要绕过                   |
-| hook 报错说命令里`$f` 变空              | hooks 命令串被外层 shell 插值           | 命令串里去掉所有 $                                         |
-| 门禁怎么总是拦agent改文件                 | 状态还不是`executing` / `reporting` | 走完受理与计划，再由你在终端`approve`                    |
-| 改了策略却不生效                          | 改的是别的文件                          | 策略文件是`.github/ocf/policy.toml`；`status` 会打印它 |
-| 生成区断言误报                            | 编辑器/格式化器在reload后进行了格式化   | 运行一次reload或不用管                                     |
+| 症状                                      | 根因                                  | 处理                                             |
+| ----------------------------------------- | ------------------------------------- | ------------------------------------------------ |
+| hook 完全没反应                           | 配置未热加载                          | 重载窗口；查`Developer: Show Agent Debug Logs` |
+| 自检报环境类问题： hooks 未指向`ocf.py` | agent没选Work Orchestrator、hook失效  | 选对应agent——**对话开始时与当前都要选**；或改`orchestrator.json` 后重载 |
+| 自检报系统类问题                          | 金丝雀未通过 = 门禁不再执行策略       | **最严重**。按提示修策略，不要绕过         |
+| hook 报错说命令里`$f` 变空              | hooks 命令串被外层 shell 插值         | 命令串里去掉所有 $                               |
+| 生成区断言误报                            | 编辑器/格式化器在reload后进行了格式化 | 运行一次reload或不用管                           |
 
-### 常见问题和建议
+### 已知限制与设计取舍
 
 | 项                           | 说明                                                       |
 | ---------------------------- | ---------------------------------------------------------- |
@@ -373,7 +369,6 @@ python .github\ocf\ocf.py selftest    # 门禁状态验证
 | 批准在文本层判定，非进程身份 | 设计不考虑有目的地绕过                                     |
 | 「什么算具体答复」无代码判定 | 与模型质量相关，加入引导词带来的成本开销大于起到的效果     |
 | 门禁强度上限由模型决定       | 与模型质量相关                                             |
-| 怎的我的agent还是蠢笨如猪    | 请确认对话开始时和当前的agent都选择了`Work Orchestrator` |
 
 其余限制见 `.github/work-control-flow.md` 的 Known limitations 一节。
 
@@ -398,7 +393,7 @@ python .github\ocf\ocf.py selftest    # 门禁状态验证
 | **硬规则**     | hard rule             | 由 hook 在会话外执行、给出判定的规则                                                                  |
 | **软规则**     | soft rule             | 自然语言语义无法被代码检查，用常驻引导词让由模型自觉执行                                              |
 | **配置**       | policy / config       | 配置文件`.github/ocf/policy.toml`                                                                   |
-| **授权**       | authorization         | 人类在自己终端执行`python ocf.py approve`                                                          |
+| **授权**       | authorization         | 人类执行`python ocf.py approve`                                                                    |
 | **受保护清单** | protected list        | `.github/protected.txt`                                                                            |
 | **维护窗口**   | maintenance window    | 配置中`system.enabled` 项                                                                           |
 | **金丝雀**     | canary                | hook 探针用例，至少一条 deny、一条 allow                                                              |
