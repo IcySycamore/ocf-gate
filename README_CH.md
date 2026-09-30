@@ -11,10 +11,11 @@
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-4B5563">
   <img alt="Host" src="https://img.shields.io/badge/Host-VS%20Code%20Copilot%20Chat-007ACC?logo=visualstudiocode&logoColor=white">
   <img alt="Dependencies" src="https://img.shields.io/badge/Dependencies-stdlib%20only-success">
-  <a href="https://github.com/IcySycamore/ocf-gate"><img alt="GitHub" src="https://img.shields.io/badge/GitHub-IcySycamore%2Focf--gate-181717?logo=github&logoColor=white"></a>
 </p>
 
 [English](README.md) · [**中文**](README_CH.md)
+
+</div>
 
 ---
 
@@ -454,6 +455,8 @@ python  .github\ocf\ocf.py selftest    # 门禁状态验证
 
 <div align="center">
 
-**⭐ If this project is helpful, give it a star to show your support PLZ!! ⭐**
+**⭐ 如果这个项目对你有帮助，欢迎 Star 支持 ⭐**
+
+<sub>Made with ❤️ for better human–agent collaboration</sub>
 
 </div>
