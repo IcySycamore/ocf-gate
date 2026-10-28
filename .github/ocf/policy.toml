@@ -1,139 +1,30 @@
-# OCF policy - the single place that decides what the gate does.
-#
-# Edit this file to change gating behaviour, then run:
-#
-#     python .github/ocf/ocf.py reload
-#
-# Rules are evaluated in file order and the FIRST match wins. Exemptions therefore come first, precise
-# rules next, and broad catch-alls last.
-#
-# The vocabulary below is GENERATED from the tables in ocf.py. It used to be written here by hand, and
-# it drifted: it went on offering `when` values the engine had stopped accepting, and following it made
-# the evaluator raise, which the hook turns into a denial of everything. Do not edit it - edit the
-# tables, which the engine actually reads.
-
-# OCF:VOCABULARY:BEGIN
-# Every identifier this file may use, and what it means.
-# Rendered by `python .github/ocf/ocf.py reload` from the tables in ocf.py, so it cannot
-# describe a key the engine does not read, or miss one it does.
-
-# [sections]
-#   system         enabled: the maintenance window. A rule says for itself whether the window reaches it - `enabled = true` holds whatever the window says, `false` is never evaluated, `"switch"` is suspended by it - and `status` prints the rules the window actually switched off, rather than a list written down here that nobody recomputes. The switch is the human's: no rule grants the agent a way to reach it. The window itself takes only true or false; any other value is read as true and reported
-#   paths          state_dir: where the runtime lives. Everything else is a fixed filename, not a setting
-#   limits         fail_budget: consecutive failures before exec-class tools are locked
-#   approval       allowed_states: the states acting is allowed in. min_reason_len: shortest approve reason
-#   hooks          which events the orchestrator is installed on; reload rewrites the wiring from these
-#   unknown_tool   action: verdict for an unrecognised tool that looks like it acts
-#   tools          the tool classes, and the payload field each tool keeps its command in
-#   selftest       canaries: one must deny and one must allow, or the gate is not proven alive
-#   rule           the rules themselves, evaluated in file order, first match wins
-
-# [rule] fields. This region is generated - edit the rules, not this text.
-#   id             the name every verdict carries, so a decision can be traced back to its rule. The tests assert these, so renaming one fails instead of drifting
-#   enabled        true: not subject to the master switch, so only a human editing this file can suspend it. "switch" or absent: the maintenance window suspends it. false: never evaluated. Any other value is read as true and reported
-#   kind           hard: the hook reads it and gives a verdict. soft: reload writes it into the contract
-#   label          the short name a soft rule is listed under, in the generated contract and in the reference region
-#   if             the conditions that must all hold. This is the whole of a rule's logic
-#   unless         the exception. For a hard rule a condition table; for a soft rule a sentence the model applies
-#   result         hard only: allow | ask | deny | require_approval. A soft rule gives no verdict, so it does not use this key
-#   else           soft only: the sentence to inject while the rule is off. Optional - with no else, an off rule says nothing, which is what an off rule used to do unconditionally. It is how one rule carries both halves of a choice, the behaviour the human wants while it is on and the behaviour they want while it is off, so that neither half has to be copied into an agent or prompt definition, where no switch reaches it
-#   message        the sentence the agent reads. For a hard rule it is handed back inside the verdict, so write what to fix rather than what went wrong; for a soft rule it is the paragraph injected into the standing contract while the rule is on
-
-# [rule.if] conditions. Each key is one condition; the value is what it compares against,
-# which is usually a regex or a number.
-#   class                  the tool's class, or the class a tool carrying a command is judged as: visual, env, exec, write, read, session, unknown, or any for every tool
-#   occasion               the occasion a rule is for. One key, two sets of values: a hard rule names the states (ready, asking, planning, executing, reporting, blocked), a soft rule names the moments in the conversation (session-start, ask, plan, act, answer). The kind decides which are legal, and naming a value from the other set is reported rather than silently never firing
-#   tool                   the tool name as the editor reports it
-#   command_matches        regex against the command string
-#   command_length_over    the command is longer than this many characters
-#   command_statements_over the command has more statements than this, counted with quotes blanked
-#   command_repeats_at_least this exact command has already run at least this many times
-#   content_matches        regex against what would be written, plus the raw tool input
-#   environment_declared   the human has declared the existing environment (the stack_env fact)
-#   approval               true when a human approve is still outstanding, i.e. the state is not an acting state
-#   computed               a flag computed from the command. See the list below
-#   fact                   a fact recorded by the human or the hook, compared with is / is_not / is_set
-#   is_set                 with fact: the fact is non-empty (true) or empty (false)
-#   is                     with fact: the fact equals this value
-#   is_not                 with fact: the fact does not equal this value
-#   write_target_unread    the action writes, but no path could be read out of it, so no path condition can judge it
-#   path_matches           regex against each path the action touches. Judged per path, never as a batch
-#   touches_protected      each path the action would change is on the protected list, judged per path
-
-# computed flags, named by the `computed` condition:
-#   control_plane      every statement runs the entry script by its full relative path, so reading the state is not acting and needs no approval
-#   invokes_entry      at least one statement does
-#   human_only_call    the entry script is invoked with a human-only subcommand as its argument
-
-# `result` accepts:
-#   allow              let it through
-#   ask                the editor asks the human once; a pre-approval may swallow this
-#   deny               refuse, and say why. Handled before any approval logic, so nothing auto-approves past it
-#   require_approval   refuse, and tell the agent to have the human run the approve command
-
-# the moments a soft rule may name in its occasion. A hard rule names a state in the same
-# key - one key, two sets of values, and the kind decides which are legal:
-#   session-start      a session begins
-#   ask                the human's statement is being read and gaps are being grilled
-#   plan               a plan is being written or audited
-#   act                a tool is about to be used
-#   answer             every answer
-
-# [hooks] switches:
-#   enabled            the master switch. false writes a wiring file with no hooks: nothing is installed. Any other value is read as true and reported
-#   session_start      run the self-check when a session begins
-#   user_prompt        advance the state machine and report it on each human message
-#   pre_tool_use       the gate. Switching it off stops everything being refused
-#   post_tool_use      warn when a command produced no progress
-# OCF:VOCABULARY:END
-
 [system]
-# The single switch for the whole gate. false = the human has handed control back: the approval
-# requirement and the orchestrator self-protection are skipped, so gate code may be edited.
-#
-# MIGRATION: keep this false until ocf.py has been validated against the real hooks, then flip it to
-# true and reload the window.
 enabled = false
 
 [paths]
 state_dir = ".orchestrator"
-# The protected list is a FIXED file, not a configured path: a list that can be pointed elsewhere is a
-# list that can be pointed away. Its entries are the files the machine never modifies, and a comment
-# inside it marks the ones that are human-written.
 
 [hooks]
-# Which events the orchestrator is installed on. `reload` rewrites .github/hooks/orchestrator.json
-# from these switches, so this is the whole of "install / uninstall": turning `enabled` off writes a
-# wiring file with no hooks in it, and VS Code then never starts this program - nothing is left behind
-# to switch off later. Any change here needs a VS Code window reload to take effect, because hooks are
-# read when the window starts.
-#
-# PreToolUse is the gate. Switching it off stops everything being refused; the rest only add context.
-enabled       = true
+enabled       = false
 session_start = true
+subagent_start = true
 user_prompt   = true
 pre_tool_use  = true
 post_tool_use = true
-
-[limits]
-# Read on every invocation, so changes apply without reloading the window.
-# The command-length, statement and repeat ceilings are not here: each rule carries its own number,
-# so there is one place to look. This is what is left, the failure budget of the workflow itself.
-fail_budget = 2
+subagent_stop = true
+stop          = true
+pre_compact   = true
+session_end   = true
+error_occurred = true
 
 [approval]
-# The states in which acting is allowed. Entering them is a human-only act.
 allowed_states = ["executing", "reporting"]
-# A real sentence, so an accidental or scripted call cannot approve a plan.
 min_reason_len = 8
 
 [unknown_tool]
-# Applied only outside allowed_states. allow | ask | deny
 action = "ask"
 
 [selftest]
-# A canary proves the gate is alive. Each case runs through the REAL hook entry point, so a gate that
-# quietly stopped denying is caught instead of looking healthy.
 [[selftest.canary]]
 id = "deny-visual-tool"
 expect = "deny"
@@ -149,18 +40,8 @@ id = "allow-session-tool"
 expect = "allow"
 payload = { hook_event_name = "PreToolUse", tool_name = "manage_todo_list", tool_input = { todoList = [] } }
 
-# ---------------------------------------------------------------------------
-# Tool classification. Adding a tool needs no code change.
-# ---------------------------------------------------------------------------
-
 [tools]
-# A tool's class says what it does. The verdict follows from that. Nothing here touches the
-# network or a file the gate cannot see, so a list edit is all a new tool needs.
-#
-# Order in this file does not matter; the order the CLASSES are consulted in does, and it is strictest
-# first, so a tool listed twice is judged by the more restrictive entry.
 
-# write: changes text. The target path and the content are inspected.
 write = [
   "create_file",
   "create_directory",
@@ -173,15 +54,11 @@ write = [
   "mcp_github_mcp_se_push_files",
   "mcp_github_mcp_se_fork_repository",
 ]
-# exec: carries a command string, which is inspected. create_and_run_task keeps its command at
-# task.command, which [tools.field] below knows about.
 exec = [
   "run_in_terminal",
   "run_notebook_cell",
   "create_and_run_task",
 ]
-# env: sets up or changes the toolchain and the environment. Gated by undeclared-env-tool first,
-# then by approval. The exec-class counterpart is undeclared-env-command.
 env = [
   "install_python_packages",
   "install_extension",
@@ -190,9 +67,6 @@ env = [
   "create_new_workspace",
   "create_new_jupyter_notebook",
 ]
-# visual: reads an image or drives a browser. Refused unconditionally, in every state, never subject to
-# approval. Everything from the playwright family belongs here: `evaluate` runs code in a page and its
-# payload is not a shell command, so it used to sit under exec and slip past the command-text ban.
 visual = [
   "screenshot_page",
   "view_image",
@@ -201,15 +75,8 @@ visual = [
   "mcp_playwright_browser_run_code_unsafe",
   "mcp_playwright_browser_evaluate",
 ]
-# session: shapes the conversation and cannot touch the repository. Never gated - that is what the class
-# means. Dispatching a subagent is not a way round the gate, because the subagent's own tool calls come
-# back through it.
 session = ["runSubagent", "manage_todo_list", "vscode_askQuestions", "memory"]
 
-# read: only reads. Never gated. This list is what keeps the strict fallback policy usable: a broken
-# policy file must deny every change, but denying reading as well leaves the agent blind and unable to
-# help find the typo. `visual` is consulted before this class on purpose, so view_image - which is also
-# a kind of reading - stays refused.
 read = [
   "read_file",
   "grep_search",
@@ -221,8 +88,6 @@ read = [
   "vscode_listCodeUsages",
 ]
 
-# Where each tool keeps its payload. A dotted path descends into nested objects, which is what fixes
-# the class of bug where a command hidden at task.command was never inspected.
 [tools.field]
 default = ["command", "code"]
 run_in_terminal = ["command"]
@@ -230,11 +95,6 @@ run_notebook_cell = ["code"]
 create_and_run_task = ["task.command"]
 mcp_playwright_browser_evaluate = ["function"]
 
-# ---------------------------------------------------------------------------
-# Rules - first match wins
-# ---------------------------------------------------------------------------
-
-# plan.md is the artifact the gate itself demands, so it must be writable before approval.
 [[rule]]
 id      = "plan-file-writable"
 enabled = "switch"
@@ -248,6 +108,7 @@ path_matches = '^\.orchestrator/plan\.md$'
 [[rule]]
 id      = "failure-budget"
 enabled = "switch"
+budget  = 2
 result  = "deny"
 message = "Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies."
 
@@ -255,6 +116,16 @@ message = "Consecutive failures reached the budget. Stop and report the symptom,
 class = "exec"
 fact  = "must_consult"
 is    = "yes"
+
+[[rule]]
+id      = "p0-is-an-audit-result"
+enabled = "switch"
+result  = "deny"
+message = "P0 is not something anyone sets. Dispatch the audit, and the hook reads the count off its report."
+
+[rule.if]
+class           = "exec"
+command_matches = '(?i)ocf\.(?:py|ps1|sh)\s+set\s+\S*p0'
 
 [[rule]]
 id      = "visual-tool"
@@ -304,18 +175,8 @@ message = "Writing a human-only subcommand into an executable file is self-autho
 [rule.if]
 class           = "write"
 path_matches    = '\.(ps1|psm1|sh|bash|bat|cmd|py|js|rb|pl)$'
-content_matches = '(?i)ocf\.(py|ps1|sh)\s+(approve|reject|protect|unprotect|reload|install|package)\b'
+content_matches = '(?i)ocf\.(py|ps1|sh)\s+(approve|reject|protect|unprotect|reload|install|package|reset)\b'
 
-# The orchestrator's own files are named in .github/protected.txt, not here. One list, one place.
-
-# A command that writes somewhere the gate could not read. `touches_protected` and `path_matches` can
-# only judge a path they were handed, so a target that could not be read reached them as "touches
-# nothing" and passed: `Set-Content -Path CONTEXT.md -Value x` was refused while the same write through
-# a variable was allowed, in the same state, by the same rules. The unreadable spelling is the easier
-# one to reach for, so the weaker answer was the one a machine would find.
-#
-# There is no exemption to grant. The fix is to name the target so it can be read, or to use an editing
-# tool - which always carries a path, and is what a file change should use anyway.
 [[rule]]
 id      = "unread-write-target"
 enabled = "switch"
@@ -326,9 +187,6 @@ message = "This command writes, but where it writes could not be read, so the ta
 class               = "exec"
 write_target_unread = true
 
-# The protected list. One rule covers both the editing tools and the terminal, because the condition
-# judges the paths the action touches wherever they came from - which is why no "-write" twin is needed.
-# There is no exemption to grant: the list is the list.
 [[rule]]
 id      = "touches-protected"
 enabled = "switch"
@@ -413,10 +271,6 @@ message = "Destructive command. Hand it to the human."
 class           = "exec"
 command_matches = '(?i)rm\s+-rf\s+/[^.]|git\s+push\s+.*--force|drop\s+table|git\s+reset\s+--hard|Remove-Item.*-Recurse.*-Force'
 
-# Approval is evaluated after every specific rule, so a precise reason beats a generic one.
-# `approval = true` reads as: approval applies and the state is not an acting state, i.e. exactly the
-# case that needs a human approve. It is a condition like any other, so a rule can combine it with a
-# class or be excepted by `unless`.
 [[rule]]
 id      = "undeclared-env-tool"
 enabled = "switch"
@@ -444,9 +298,6 @@ enabled = "switch"
 result  = "require_approval"
 message = "Commands need approval. The human runs the approve subcommand in their own terminal."
 
-# Reading the orchestrator's own state is not acting: a command that only calls this program is how
-# the state gets read at all, so requiring approval for it would make the state unreadable exactly
-# while approval is pending.
 unless  = { computed = "control_plane" }
 
 [rule.if]
@@ -473,33 +324,51 @@ message = "The same command again, which suggests you are stuck in a loop. The h
 class                   = "exec"
 command_repeats_at_least = 3
 
-# ---------------------------------------------------------------------------
-# Soft rules - kind = "soft"
-# ---------------------------------------------------------------------------
-#
-# A soft rule carries a sentence instead of a verdict. `reload` writes it into
-# .github/copilot-instructions.md between the OCF:GENERATED markers. Edit it here, then run:
-#
-#     python .github/ocf/ocf.py reload
-#
-# Fields and values are listed in the vocabulary region at the top of this file, which is generated from
-# the engine - do not repeat them here. Order does not matter: soft rules are not evaluated in sequence.
-
 [[rule]]
 id      = "intake-grilling"
 kind    = "soft"
 label   = "ask only what is missing"
 enabled = "switch"
 message = """
-After the human's statement, derive the eight background items
-from their reply and from the surrounding context.
-Ask only about the part that is genuinely missing, one question per turn.
-Do not guess, and do not fill anything in on their behalf: missing is missing.
-A perfunctory or automatic reply is not an answer. Re-ask."""
-unless  = 'The human said outright "use the defaults" or "you decide": this round may be skipped.'
+Ask about the missing intake items, one question per turn.
+Read the five items - goal, tools, references, deliverables, code_style - out of the human's reply
+and the surrounding context, and ask only about what is genuinely missing.
+Do not guess and do not fill anything in on their behalf: missing is missing.
+A perfunctory or automatic reply is not an answer. Ask again."""
 
 [rule.if]
 occasion = "ask"
+
+[[rule]]
+id      = "session-start-briefing"
+kind    = "soft"
+label   = "report the system at session start"
+enabled = true
+message = """
+Before the first user-facing answer in a new conversation, briefly report the OCF startup summary
+that the SessionStart hook supplied: the component statuses it checked. The workflow state, the flow
+line and the two command groups are not in it, and are not to be restated - the standing contract
+carries all three on every turn. Suggest collaboration by request type: ask an ordinary question
+directly; give a task as Goal / Requirements / Deliverables; report a bug with symptom, expected
+result, actual result, and reproduction steps. Keep it short. Do not turn WARN or FAIL into PASS, and
+do not claim the hook can enforce this user-visible report."""
+
+[rule.if]
+occasion = "session-start"
+
+[[rule]]
+id      = "quality-self-evaluation"
+kind    = "soft"
+label   = "evaluate each answer and deliverable"
+enabled = true
+message = """
+Before the final response, use the `quality-self-evaluation` skill to score the final answer and each
+new or modified deliverable against every rule in the active policy. Include concise evidence and
+the independent hard-compliance result. Never put evaluation metadata inside the artifact being
+evaluated. This is an evidence-backed self-rating, not an independent quality benchmark."""
+
+[rule.if]
+occasion = "answer"
 
 [[rule]]
 id      = "independent-audit"
@@ -507,14 +376,9 @@ kind    = "soft"
 label   = "independent audit"
 enabled = "switch"
 message = """
-Once the plan is written, dispatch the plan-auditor subagent for an independent audit,
-and never audit your own plan.
-At zero P0, hand the human the action report and the risk design report, hand them
-
-    python .github/ocf/ocf.py approve "<reason>"
-
-verbatim, and stop. Only the human can run approve, in their own terminal."""
-unless  = 'Nothing to audit yet, for example a round that only clarifies requirements: not applicable.'
+Dispatch the plan-auditor subagent once the plan is written, and never audit your own plan.
+At zero P0, give the human the action report and the risk design report, then hand them the approve
+command verbatim and stop. Only the human can run approve, in their own terminal."""
 
 [rule.if]
 occasion = "plan"
@@ -525,8 +389,7 @@ kind    = "soft"
 label   = "screenshots come from the human"
 enabled = "switch"
 message = """
-When something has to be seen, say exactly what to capture and how many,
-then ask the human to attach the screenshot.
+Say exactly what to capture and how many, then ask the human to attach the screenshot.
 A screenshot is a readable attachment; the screenshot tool is permanently forbidden.
 Do not route around it: no command line, no headless browser, no other way of producing an image."""
 else    = """
@@ -543,30 +406,15 @@ kind    = "soft"
 label   = "beginner mode"
 enabled = "switch"
 message = """
-In professional but vivid language, explain in full detail
-every domain primitive this answer uses:
-what it is, what it means here, why it is called that,
-and which concept it is easily confused with.
-Then add those primitives to
-  .orchestrator/glossary.md;
-do not record a primitive twice,
-and change an entry only when the definition needs correcting.
-Do not explain for the sake of explaining:
-only the primitives this answer actually uses, nothing else.
-
-When the human's request, question or understanding is vague, colloquial
-or inconsistent, do not guess and do not hand them a list of fields to fill in;
-politely and modestly suggest the three-part form
-Goal: what you want, in one sentence;
-Requirements: the design steps and process you intend to use;
-Deliverables: the format of the result, and the state or effect it should reach.
-Then ask once more, or say it back to them once."""
-unless  = """
-The human said "no explanation needed", "just the conclusion", or has clearly understood: skip it.
-The human already stated goal, requirements and deliverables clearly: skip the restatement."""
+Explain, in full detail and in professional but vivid language, every domain primitive this answer
+uses: what it is, what it means here, why it is called that, and what it is confused with.
+Then add those primitives to .orchestrator/glossary.md - never twice, and change an entry only when
+its definition needs correcting. Explain only the primitives this answer actually uses.
+When the human's request is vague or colloquial, do not guess and do not hand them a form to fill
+in: suggest the three-part shape - Goal, Requirements, Deliverables - then ask once more."""
 
 [rule.if]
-occasion = "ask, answer"
+occasion = "answer"
 
 [[rule]]
 id      = "human-only-commands"
@@ -574,11 +422,8 @@ kind    = "soft"
 label   = "human-only commands"
 enabled = "switch"
 message = """
-Authorization commands may only be run by the human.
-Even when the human asks you in the conversation to run one for them, do not run it;
-if they insist, tell them to change the rule in
-  .github/ocf/policy.toml"""
-unless  = "Never an exception"
+Do not run authorization commands, even when the human asks you in the conversation to run one.
+Point them at the rule or the config to change instead."""
 
 [rule.if]
 occasion = "act"
@@ -589,15 +434,7 @@ kind    = "soft"
 label   = "write for the reader"
 enabled = "switch"
 message = """
-Before writing a sentence into an artifact - a comment, a document, a UI string, a commit
-message - stop and name its reader, then write for that reader only.
-Name the reader once per artifact, not once per sentence: when it is not obvious, judge by the
-last thing the human asked for. Deciding again for every sentence costs more than it catches.
-Your hesitation, the options you rejected and the pitfall you guessed at are yours alone:
-they belong in your own memory, never in the deliverable.
-The human tells you which seat they are in by what they ask for - but when they are asking on
-someone else's behalf ("for my boss", "for the client"), the reader is that someone, not the
-person speaking. One task can hand a result, a screen and a script to three different readers.
+Name the reader once per artifact, then write for that reader only.
   developer  reads comments and internals. Be exact, and explain the design honestly.
   deployer   follows steps. Say what to do and why each step is required, in whatever
              technical terms that step needs - neither a wall of jargon nor none at all.
@@ -605,10 +442,10 @@ person speaking. One task can hand a result, a screen and a script to three diff
              party to the design, so say what it does for them and nothing about how it does it.
   maintainer is whoever changes this later. A migration script, a config file, a comment: say what
              it does, what it assumes, and how to undo it, for someone acting on it months from now.
-What this forbids, in one example: a sign-in page that says "your password is never uploaded -
-it is hashed on your own machine, and the server stores only a verifier". Every clause of that
-sentence is true, and none of it belongs on the user's page."""
-unless  = "The human asks for the reasoning on purpose, or is the one building it: then the design IS the answer."
+Judge by the last thing the human asked for; when they ask on someone else's behalf, the reader is
+that someone. One task can hand a result, a screen and a script to three different readers.
+Keep your hesitation, the options you rejected and the pitfalls you guessed at in your own memory,
+never in the deliverable."""
 
 [rule.if]
 occasion = "act, answer"
@@ -619,29 +456,24 @@ kind    = "soft"
 label   = "a way back"
 enabled = "switch"
 message = """
-Before executing a plan, decide what it would cost to undo and whether you can undo it.
+Before executing, decide what it costs to undo, and make the way back before you start.
   high    hard to reverse: a rewrite, a migration, a rename across many files.
           Archive first - a git commit or a tarball of the tree - and say where it is.
   medium  reversible, but only with a way back. If this project has none (no version
           control, no archive, no copy), ask the human for one before starting.
   low     adding a file, editing a sentence. Nothing to say; just work."""
-unless  = "The human says to go ahead without one."
 
 [rule.if]
 occasion = "plan, act"
 
-# Split out of `plan-file`, which was off, injected nothing, and mixed two decisions in one switch.
 [[rule]]
 id      = "plan-write-file"
 kind    = "soft"
 label   = "the plan is written to a file"
 enabled = false
 message = """
-The plan goes to
-  .orchestrator/plan.md,
-not into the conversation: it is read back before acting, and it is what `plan-schema` checks.
-Read it back afterwards and confirm nothing in it is a guess."""
-unless  = 'Skip when the human says "just give it to me" or "no file needed".'
+Write the plan to .orchestrator/plan.md instead of the conversation, then read it back and confirm
+nothing in it is a guess. It is what `plan-schema` checks."""
 
 [rule.if]
 occasion = "plan"
@@ -652,11 +484,10 @@ kind    = "soft"
 label   = "fill the plan template"
 enabled = true
 message = """
-Shape the plan after
-  .github/assets/plan-template.md:
-type, summary, steps, tools, files, scope, deliverables, self-review.
-Every section specific enough to be followed directly."""
-unless  = 'Skip when the human says "just call it out" or "no sections needed".'
+Shape the plan after .github/assets/plan-template.md, section by section: type, summary, steps,
+tools, files, scope, deliverables, self-review.
+Make every section specific enough to be followed directly. Never write P0 rows into Self-review:
+it records the resolved P1/P2 after the last audit came back clean."""
 
 [rule.if]
 occasion = "plan"
@@ -667,15 +498,13 @@ kind    = "soft"
 label   = "fill the report template"
 enabled = true
 message = """
-Shape the delivery report after
-  .github/assets/report-template.md:
-plan against actual, open items, change list, counts, audit summary, verification status.
+Shape the delivery report after .github/assets/report-template.md: plan against actual, open items,
+change list, counts, audit summary, verification status.
 The headings stay in English; fill every other line in the language the human is using.
 Give it in the conversation by default - a file only when the human asks for one."""
-unless  = 'Skip when the human says "just the summary" or "no report needed".'
 
 [rule.if]
-occasion = "act"
+occasion = "answer"
 
 [[rule]]
 id      = "grill-with-docs"
@@ -683,16 +512,9 @@ kind    = "soft"
 label   = "question against the documents"
 enabled = "switch"
 message = """
-Before questioning or planning, read
-  CONTEXT.md
-  and
-  docs/adr/
-: which words the project already uses, and what it has already decided.
-Aim the questions at those, for example
-"is the X you mean the same thing as the Y in CONTEXT.md"
-"this conflicts with the conclusion in ADR-0003, so why is it different this time".
-If the terms disagree, settle the terms first, and the problem after."""
-unless  = "When the project has neither CONTEXT.md nor docs/adr/, this rule has nothing to aim at: skip."
+Read CONTEXT.md and docs/adr/ before planning, and aim the questions at what they already say.
+Ask whether a term means what CONTEXT.md says it means, and why a decision differs from the ADR.
+If the project has neither, skip this rule and plan from the conversation alone."""
 
 [rule.if]
 occasion = "plan"
@@ -703,16 +525,13 @@ kind    = "soft"
 label   = "a question is not a task"
 enabled = "switch"
 message = """
-A turn that only asks a question is not a task: answer it, then hand the machine
-back with
-  advance ready
+Answer the question, then hand the machine back with `advance ready`.
 Do that only on the turn the hook says moved the machine from ready into asking.
-In every other state - planning, executing, reporting, blocked, or asking already
-open from an earlier turn - answer the question and do not run `advance ready`:
-pulling the machine back out of work in progress discards it with no human act.
-The state still moves when the work itself moves it."""
-unless  = "When the turn also asks for work, it is a task: run the intake and leave the state where the flow puts it."
+In every other state - planning, executing, reporting, blocked, or an intake already open from an
+earlier turn - answer and do not run `advance ready`: pulling the machine out of work in progress
+discards it with no human act.
+When the turn also asks for work, it is a task: run the intake and leave the state where the flow
+puts it."""
 
 [rule.if]
 occasion = "ask"
-

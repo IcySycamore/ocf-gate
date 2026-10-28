@@ -14,6 +14,7 @@ agent: status | set key=value | gate [name|all] | journal [n] | fail "<reason>" 
 human: approve "<reason>" | reject ["<reason>"]
        protect <path ...> | unprotect <path ...>
        reload | install <target-dir> | package <output-dir>
+       reset
 
 A human-only command runs in the human's terminal only, never yours; the human asking you in the
 conversation is not approval. If they want that to change, they change the rule or the config.
@@ -25,13 +26,17 @@ list (.github/protected.txt).
 
 When a gate refuses, fix the precondition it names - never rewrite your way around it.
 
-## Soft rules
+## Soft rules are delivered by the hook
 
-Prose for a moment in the work. Each names the moments it is in force at; the exception is yours to judge.
+Soft rules arrive from the hook, once per turn, filtered to the state the machine is in. With the user_prompt hook switched off they do not arrive at all.
 
-- (act) When something has to be seen: you may use the vision tools mcp and vscode provide, pixel statistics and locating scripts, forward the content to another model, use a model's own visual capability, or ask the human to supply a screenshot in the next turn so the native model vision can be used.
-- **fill the plan template** (plan) - Shape the plan after .github/assets/plan-template.md:type, summary, steps, tools, files, scope, deliverables, self-review.Every section specific enough to be followed directly.
-  unless: Skip when the human says "just call it out" or "no sections needed".
-- **fill the report template** (act) - Shape the delivery report after .github/assets/report-template.md:plan against actual, open items, change list, counts, audit summary, verification status.The headings stay in English; fill every other line in the language the human is using.Give it in the conversation by default - a file only when the human asks for one.
-  unless: Skip when the human says "just the summary" or "no report needed".
+## Two channels, and they fail separately
+
+This file reaches you through the editor's custom instructions, which is not the hook mechanism: it arrives even in a session where no hook ever runs. The rules do not. A gate that was never installed is silent in exactly the same way as a gate with nothing to object to, and every other check in this project runs through the engine and so reports PASS either way. So run both tests below before your first answer in a session and state what they found.
+
+1. What actually arrived. A live hook returns text on every human turn and the editor puts it into your context, so a turn it served carries a marker. Read the marker, because there are three and they mean different things. `OCF state: <state>` is the gate armed. `OCF: the master switch is off` is the gate disarmed by a human: nothing is enforced, so no rule may be reported as satisfied, and that is not a fault. `OCF: the hook errored` is the gate alive but faulty: say so, and treat everything it would have enforced as absent. A turn with no marker at all means the hook did not run, whatever any file says. This is the only test that cannot be fooled by a healthy engine behind a dead hook, and it costs nothing.
+2. `python .github\ocf\liveness.py` (`python3` elsewhere). It reads the wiring, the editor switch, this workspace's session store and the local chat agent's hook log, and answers one of ALIVE, NOT-INSTALLED, DISABLED, STALE or NO-EVIDENCE. NO-EVIDENCE means it cannot tell: the agent-host harnesses run file hooks inside their own runtime, whose log it cannot read, so it neither confirms nor rules out.
+
+A marker that says the gate is off, or ALIVE, is the only thing that means the gate is in force. Otherwise treat the approval requirement and the protected list as absent rather than met, say which test failed, and do not describe the gate as working. Never report a verdict you did not run, and never upgrade one of them into ALIVE.
+
 <!-- OCF:END -->

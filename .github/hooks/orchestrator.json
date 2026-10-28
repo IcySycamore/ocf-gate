@@ -8,6 +8,14 @@
         "timeout": 30
       }
     ],
+    "SubagentStart": [
+      {
+        "type": "command",
+        "command": "python3 .github/ocf/ocf.py hook",
+        "windows": "python .github/ocf/ocf.py hook",
+        "timeout": 20
+      }
+    ],
     "UserPromptSubmit": [
       {
         "type": "command",
@@ -25,6 +33,46 @@
       }
     ],
     "PostToolUse": [
+      {
+        "type": "command",
+        "command": "python3 .github/ocf/ocf.py hook",
+        "windows": "python .github/ocf/ocf.py hook",
+        "timeout": 20
+      }
+    ],
+    "SubagentStop": [
+      {
+        "type": "command",
+        "command": "python3 .github/ocf/ocf.py hook",
+        "windows": "python .github/ocf/ocf.py hook",
+        "timeout": 20
+      }
+    ],
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python3 .github/ocf/ocf.py hook",
+        "windows": "python .github/ocf/ocf.py hook",
+        "timeout": 20
+      }
+    ],
+    "PreCompact": [
+      {
+        "type": "command",
+        "command": "python3 .github/ocf/ocf.py hook",
+        "windows": "python .github/ocf/ocf.py hook",
+        "timeout": 20
+      }
+    ],
+    "SessionEnd": [
+      {
+        "type": "command",
+        "command": "python3 .github/ocf/ocf.py hook",
+        "windows": "python .github/ocf/ocf.py hook",
+        "timeout": 20
+      }
+    ],
+    "ErrorOccurred": [
       {
         "type": "command",
         "command": "python3 .github/ocf/ocf.py hook",

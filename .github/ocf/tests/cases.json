@@ -306,7 +306,7 @@
   },
   {
     "id": "switch-off-opens-gate-code",
-    "why": "Every rule follows the master switch, the protected list included, so with the window open gate code is editable - which is what the window is for. What keeps that safe is that only a human can open it, not that the list ignores the switch. With the switch ON the same write is refused, and self-protection-holds-while-acting is what pins that half.",
+    "why": "Every rule follows the master switch, the protected list included, so with the window open gate code is editable - which is what the window is for. What keeps that safe is that only a human can open it, not that the list ignores the switch. With the switch ON the same write is refused, and self-protection-holds-while-acting is what pins that half. The master switch now answers with SILENCE rather than `allow`, and that half matters as much as the edit does: `allow` is a hook suppressing the editor's own approval prompt, which is more permissive than having no gate at all, so a disarmed gate must say nothing at all. The edit still goes through, because nothing refuses it, which is what this case has always been about.",
     "protected": [".github/ocf"],
     "enabled": false,
     "state": "executing",
@@ -314,8 +314,7 @@
       "tool_name": "create_file",
       "tool_input": { "filePath": ".github/ocf/ocf.py", "content": "# edit\n" }
     },
-    "expect": "allow",
-    "expect_rule": "default"
+    "expect_silent": true
   },
   {
     "id": "protected-path-blocked",
@@ -640,5 +639,189 @@
     },
     "expect": "allow",
     "expect_rule": "session"
+  },
+  {
+    "id": "p0-count-is-not-set-by-hand",
+    "why": "`zero-p0` is the gate that lets work start, so whoever can write the number can open the gate. The agent that wrote the plan is the party the audit checks, so it is the last one that may write this particular fact. The hook reads the count off the auditor's report instead.",
+    "state": "planning",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "python .github/ocf/ocf.py set p0_count=0" }
+    },
+    "expect": "deny",
+    "expect_rule": "p0-is-an-audit-result"
+  },
+  {
+    "id": "other-facts-are-still-settable",
+    "why": "The rule above has to be about this one fact and not about `set`. A rule that quietly banned every fact would look the same on the case that blocks the number, and the intake is built out of facts.",
+    "state": "asking",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": {
+        "command": "python .github/ocf/ocf.py set goal=\"ship the fix\""
+      }
+    },
+    "expect": "allow",
+    "expect_rule": "default"
+  },
+  {
+    "id": "a-reached-failure-budget-blocks-commands",
+    "why": "The budget is what turns repeated failure into a stop. Only the hook arms this fact, and until this case nothing drove the armed state, so the rule was free to stop matching without anything going red.",
+    "state": "executing",
+    "facts": { "must_consult": "yes" },
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "echo hi" }
+    },
+    "expect": "deny",
+    "expect_rule": "failure-budget"
+  },
+  {
+    "id": "the-agent-may-not-advance-itself-into-executing",
+    "why": "Entering executing is the human's act, and it is the one state the agent can never reach. The rule reads the command text, so this pins the spelling that actually comes out of an agent's terminal.",
+    "state": "planning",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": {
+        "command": "python .github/ocf/ocf.py advance executing \"the plan looks fine to me\""
+      }
+    },
+    "expect": "deny",
+    "expect_rule": "advance-to-executing"
+  },
+  {
+    "id": "a-command-that-waits-for-a-human-is-refused",
+    "why": "A command that blocks on input, or raises an elevation prompt, hangs the turn with nothing to show for it. The gate cannot see the prompt coming, so it judges the spellings that produce one.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "sudo apt-get update" }
+    },
+    "expect": "deny",
+    "expect_rule": "interactive-command"
+  },
+  {
+    "id": "tests-need-the-human-to-ask-first",
+    "why": "Running the suite is how an agent grades its own work, and the rule is that the human asks first. No fixture ever sets the fact, so this case pins the refusing half - which is the whole point of the rule.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "pytest -q" }
+    },
+    "expect": "deny",
+    "expect_rule": "test-authorization"
+  },
+  {
+    "id": "installing-before-the-environment-is-declared",
+    "why": "The gate must not let the machine pick a toolchain on the human's behalf. `undeclared-env-tool` covers the tools that exist to do this; this is its terminal counterpart, and the two are judged by different classes, so neither case covers the other.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "npm install left-pad" }
+    },
+    "expect": "deny",
+    "expect_rule": "undeclared-env-command"
+  },
+  {
+    "id": "a-destructive-command-goes-to-the-human",
+    "why": "Every entry in that list is irreversible, and the rule is the only thing between an agent and one of them.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "run_in_terminal",
+      "tool_input": { "command": "git reset --hard HEAD~1" }
+    },
+    "expect": "deny",
+    "expect_rule": "destructive"
+  },
+  {
+    "id": "an-env-tool-before-the-environment-is-declared",
+    "why": "The same duty as the command rule above and a different class: this one is for the tools that exist only to change the toolchain. A class-keyed rule with no case is a rule nobody would notice had stopped matching.",
+    "state": "executing",
+    "payload": {
+      "tool_name": "install_python_packages",
+      "tool_input": { "packageList": ["requests"] }
+    },
+    "expect": "deny",
+    "expect_rule": "undeclared-env-tool"
+  },
+  {
+    "id": "an-env-tool-outside-an-acting-state-needs-approval",
+    "why": "The environment is declared here so the rule above it cannot fire, which is what makes this case about approval rather than about declaration. The three approval rules share one verdict and are keyed to three classes, so the only way to pin that this class reaches it is to walk one.",
+    "state": "asking",
+    "facts": { "stack_env": "python 3.12" },
+    "payload": {
+      "tool_name": "install_python_packages",
+      "tool_input": { "packageList": ["requests"] }
+    },
+    "expect": "deny",
+    "expect_rule": "approval-required-env"
+  },
+  {
+    "id": "camelcase-event-name-is-the-same-event",
+    "why": "The host's key map accepts `PreToolUse` and `preToolUse` for one event, and the engine used to match the exact string - so a host that spelled it the other way got a hook that was installed, wired, and answered nothing. That failure is silent by construction: no decision looks exactly like no objection.",
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "preToolUse",
+      "tool_name": "read_file",
+      "tool_input": { "filePath": "README.md" }
+    },
+    "expect": "allow",
+    "expect_rule": "read"
+  },
+  {
+    "id": "an-agent-stop-is-refused-until-the-round-closes",
+    "why": "`reporting` is the one state in which the work is finished but the round is not: the contract's last step of a round is `advance ready`. Refusing the stop there is the narrowest enforcement that is still worth having, and it is also the shape check - Stop reads `decision`, not `permissionDecision`, so an engine that answered in the gate's shape would be ignored and the agent would stop as if nothing had objected.",
+    "state": "reporting",
+    "payload": {
+      "hook_event_name": "Stop",
+      "session_id": "case"
+    },
+    "expect": "block",
+    "expect_rule": "round-not-closed",
+    "expect_reason_contains": ["advance ready"]
+  },
+  {
+    "id": "an-agent-stop-in-executing-is-legitimate",
+    "why": "The other half of the case above, and the half that keeps the rule from being a trap: in `executing` the agent stops to wait for the human, so refusing there would trap it in a loop it never earned. Silence is the answer.",
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "Stop",
+      "session_id": "case"
+    },
+    "expect_silent": true
+  },
+  {
+    "id": "the-master-switch-says-it-is-off",
+    "why": "The master switch has to control the whole system, and it did not: the entry point ran anyway, and a fault in it denied every call including the ones that would have recorded what happened. Off now means the gate is out of the way - and it says so, because with no decision and no statement of being disarmed, a gate a human switched off is indistinguishable from a gate that died.",
+    "enabled": false,
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "UserPromptSubmit",
+      "prompt": "hello",
+      "session_id": "case"
+    },
+    "expect_context_contains": ["master switch is off", "no rule is in force"]
+  },
+  {
+    "id": "events-with-no-consumer-answer-nothing",
+    "why": "PreCompact, SessionEnd and ErrorOccurred have no consumer on the other side, so anything written to stdout is parsed by nobody. They are recorded in the journal instead, and this case pins that they stay mute - an event that started answering would look healthy while doing nothing with the answer.",
+    "state": "executing",
+    "payload": {
+      "hook_event_name": "PreCompact",
+      "trigger": "auto",
+      "session_id": "case"
+    },
+    "expect_silent": true
+  },
+  {
+    "id": "the-installation-switch-uninstalls",
+    "why": "`[hooks] enabled = false` is what 'uninstall' means, and it must be honest rather than permissive: a hook answering `allow` would suppress the editor's own approval prompt, leaving the user with less protection than if they had never installed this at all. So the answer is silence.",
+    "hooks_enabled": false,
+    "state": "executing",
+    "payload": {
+      "tool_name": "create_file",
+      "tool_input": { "filePath": "src/x.py", "content": "x\n" }
+    },
+    "expect_silent": true
   }
 ]

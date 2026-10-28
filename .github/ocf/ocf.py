@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -73,7 +74,8 @@ TRANSITIONS = {
                   ("advance", "init", "selftest", "verify")),
         "human": (("approve", "reject"),
                   ("protect", "unprotect"),
-                  ("reload", "install", "package")),
+                  ("reload", "install", "package"),
+                  ("reset",)),
     },
     "usage": {
         "status": "status",
@@ -93,6 +95,7 @@ TRANSITIONS = {
         "reject": 'reject ["<reason>"]',
         "protect": "protect <path ...>",
         "unprotect": "unprotect <path ...>",
+        "reset": "reset",
     },
 }
 
@@ -166,12 +169,60 @@ CP_STMT_RE = re.compile(r"(?i)^\s*(?:&\s*)?(?:(?:python3?(?:\.exe)?|py(?:\.exe)?
 # name in the wiring file -> (switch in [hooks], the event this program reads, timeout seconds).
 # One table for the same reason as the command table: the wiring file is generated from it, and a
 # second hand-written copy of an event name is a hook that silently stops being installed.
+#
+# `kind` is the shape of the answer, and it is not the same for every event - which is why it is a
+# field here instead of an if-chain in the dispatch. Read off the consumers rather than guessed:
+# PreToolUse carries `permissionDecision`, Stop and SubagentStop carry `decision`, SessionStart,
+# SubagentStart and UserPromptSubmit take a plain string, and PostToolUse alone takes a list. One
+# emitter for all of them was wrong in three ways at once, and every one of those ways was silent.
+#
+# This is the file-configurable set, and it is exactly the set the editors resolve: the host's own key
+# map accepts these ten names and their camelCase spellings, and nothing else. Events that exist only
+# as SDK callbacks - `postToolUseFailure`, `permissionRequest`, `notification`, `postResult` - cannot be
+# installed from a file at all, so listing one here would install a hook that is never invoked.
+HookEvent = collections.namedtuple("HookEvent", "switch event aliases timeout kind")
+
 HOOK_EVENTS = (
-    ("session_start", "SessionStart", 30),
-    ("user_prompt", "UserPromptSubmit", 20),
-    ("pre_tool_use", "PreToolUse", 20),
-    ("post_tool_use", "PostToolUse", 20),
+    HookEvent("session_start", "SessionStart", ("sessionStart", "SessionStartReload"), 30, "context"),
+    HookEvent("subagent_start", "SubagentStart", ("subagentStart",), 20, "context"),
+    HookEvent("user_prompt", "UserPromptSubmit", ("userPromptSubmitted", "userPromptSubmit"), 20,
+              "context"),
+    HookEvent("pre_tool_use", "PreToolUse", ("preToolUse",), 20, "gate"),
+    HookEvent("post_tool_use", "PostToolUse", ("postToolUse",), 20, "context-list"),
+    HookEvent("subagent_stop", "SubagentStop", ("subagentStop",), 20, "block"),
+    HookEvent("stop", "Stop", ("AgentStop", "agentStop"), 20, "block"),
+    HookEvent("pre_compact", "PreCompact", ("preCompact",), 20, "silent"),
+    HookEvent("session_end", "SessionEnd", ("sessionEnd",), 20, "silent"),
+    HookEvent("error_occurred", "ErrorOccurred", ("errorOccurred",), 20, "silent"),
 )
+# Which announcement of an event belongs to which event. Keyed on the name with everything but letters
+# and digits removed and lowercased, so `PreToolUse`, `preToolUse` and `pre_tool_use` are one key and
+# the same hook is recognised whichever spelling a host sends. Matching the exact name was the reason a
+# hook could be installed correctly and still answer nothing: the host said `preToolUse` and the engine
+# was waiting for `PreToolUse`.
+def _event_key(name):
+    return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+
+EVENT_ALIASES = {}
+for _entry in HOOK_EVENTS:
+    for _name in (_entry.event,) + tuple(_entry.aliases):
+        EVENT_ALIASES[_event_key(_name)] = _entry.event
+# `agentStop` is the runtime's name for Stop, and stripping the case does not turn it into `stop`,
+# because the word in front is not decoration to a normaliser.
+for _name in ("agentStop", "AgentStop"):
+    EVENT_ALIASES[_event_key(_name)] = "Stop"
+
+
+def hook_event(event):
+    """The table row for an event name, however the host spells it, or None if it names no event."""
+    canonical = EVENT_ALIASES.get(_event_key(event))
+    if not canonical:
+        return None
+    for entry in HOOK_EVENTS:
+        if entry.event == canonical:
+            return entry
+    return None
 
 PATH_KEYS = ("filePath", "file_path", "path", "newPath", "uri", "dirPath")
 CONTENT_KEYS = ("content", "newString", "new_string", "newCode", "new_str", "body")
@@ -304,11 +355,13 @@ DEFAULT_POLICY = {
     "paths": {
         "state_dir": DEFAULT_STATE_DIR,
     },
-    "limits": {"fail_budget": 2},
     "approval": {"allowed_states": ["executing", "reporting"], "min_reason_len": 8},
-    "hooks": {"enabled": True,
-              "session_start": True, "user_prompt": True,
-              "pre_tool_use": True, "post_tool_use": True},
+    # Built from HOOK_EVENTS instead of typed out. It was typed out, and that made this the third copy
+    # of one key list - the event table, the vocabulary the policy is rendered with, and this block that
+    # validation reads. Two of them followed the table and this one did not, so adding an event produced
+    # a policy the engine itself called malformed: a drift the comment a few lines above already warns
+    # about for the class lists, met again three lines later.
+    "hooks": dict([("enabled", True)] + [(entry.switch, True) for entry in HOOK_EVENTS]),
     "unknown_tool": {"action": "ask"},
     # The class lists are named by the class table above, so there is no second list of class names;
     # `read` and `session` are filled in below, because the strict fallback policy is built from this
@@ -387,8 +440,8 @@ def policy_value(policy, dotted):
     """Read a value the policy is guaranteed to carry, naming the key when it is not there.
 
     Every read used to carry its own default - a second answer to a question the merge had already
-    answered. Those defaults were unreachable, and two of them (`fail_budget`, `min_reason_len`)
-    disagreed with the table they shadowed, with nothing pinning the pair together. So the defaults
+    answered. Those defaults were unreachable, and some of them disagreed with the table they
+    shadowed, with nothing keeping the two in step. So the defaults
     live in DEFAULT_POLICY only. A miss here means DEFAULT_POLICY lost a key this program reads: an
     error in this file, not in the human's, and it says which key rather than raising a bare KeyError
     that the hook would turn into an unexplained denial.
@@ -412,8 +465,22 @@ def state_dir(root, policy):
     return os.path.join(root, policy_paths(policy)["state_dir"])
 
 
-def limits(policy):
-    return policy_value(policy, "limits")
+def failure_budget(policy):
+    """The consecutive-failure ceiling, read from the rule that enforces it.
+
+    This number used to sit in `[limits]`, the last one outside the rule that reads it - and that
+    rule is its only reader and its only enforcer, so the two could only drift apart. It is a field
+    of the rule now, like every other ceiling in this policy.
+    """
+    rule = rule_by_id(policy, FAILURE_BUDGET_RULE)
+    if rule is None:
+        raise OcfError("policy", "the policy has no %r rule, so it has no failure budget either"
+                                 % FAILURE_BUDGET_RULE)
+    value = rule.get("budget")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise OcfError("policy", "%s: budget must be a whole number of one or more; got %r"
+                                 % (FAILURE_BUDGET_RULE, value))
+    return value
 
 
 def strict_bool(value):
@@ -486,7 +553,7 @@ def window_text(policy):
 
 # Every identifier the interpreter is willing to act on. Kept next to the engine rather than in the
 # policy file, because the point is to check the file against the engine, not against itself.
-SECTION_KEYS = ("system", "paths", "limits", "approval", "hooks", "unknown_tool",
+SECTION_KEYS = ("system", "paths", "approval", "hooks", "unknown_tool",
                 "tools", "selftest", "rule")
 # `allow | ask | deny | require_approval` are defined with their meanings and their editor decisions
 # lower down, in ACTIONS: one table rather than a value tuple here and a help list there, which is two
@@ -498,11 +565,12 @@ COMPUTED_FLAGS = ("control_plane", "invokes_entry", "human_only_call")
 
 # When a soft rule applies. A soft rule is the one kind of rule no hook can enforce - nothing can
 # check whether a sentence was written - so instead of a verdict it carries the sentence itself, and
-# `reload` writes it into the instructions the model reads on every turn. The occasion is therefore a
-# moment in the conversation, not a tool call: the hard vocabulary (class, tool, command, path) has no
-# meaning when no tool is being called.
-SOFT_OCCASIONS = ("session-start", "ask", "plan", "act", "answer")
-RULE_KEYS = ("id", "enabled", "kind", "label", "if", "unless", "result", "else", "message")
+# the hook hands it to the model once per turn, filtered to where the machine is. The occasion is
+# therefore a moment in the conversation, not a tool call: the hard vocabulary (class, tool, command,
+# path) has no meaning when no tool is being called.
+SOFT_OCCASIONS = ("session-start", "ask", "plan", "act", "answer", "on-mistake")
+RULE_KEYS = ("id", "enabled", "budget", "kind", "label", "if", "unless", "result", "else",
+             "message")
 # The key a soft rule's sentence lives under, named once because two readers have to agree on it:
 # `soft_text` reads it into the standing contract, and `policy_findings` insists it is there. Two
 # spellings of one name is how a rule ends up on and silent.
@@ -533,7 +601,6 @@ SECTION_HELP = (
                "is the human's: no rule grants the agent a way to reach it. The window itself takes "
                "only true or false; any other value is read as true and reported"),
     ("paths", "state_dir: where the runtime lives. Everything else is a fixed filename, not a setting"),
-    ("limits", "fail_budget: consecutive failures before exec-class tools are locked"),
     ("approval", "allowed_states: the states acting is allowed in. min_reason_len: shortest approve reason"),
     ("hooks", "which events the orchestrator is installed on; reload rewrites the wiring from these"),
     ("unknown_tool", "action: verdict for an unrecognised tool that looks like it acts"),
@@ -548,6 +615,9 @@ RULE_FIELD_HELP = (
     ("enabled", "true: not subject to the master switch, so only a human editing this file can suspend "
                 "it. \"switch\" or absent: the maintenance window suspends it. false: never evaluated. "
                 "Any other value is read as true and reported"),
+    ("budget", "the rule's own number, for a rule that counts: `failure-budget` reads it as the number "
+               "of consecutive failures before exec-class tools lock. It lives on the rule rather than "
+               "in a shared table, so the rule and its own limit cannot drift into two files"),
     ("kind", "hard: the hook reads it and gives a verdict. soft: reload writes it into the contract"),
     ("label", "the short name a soft rule is listed under, in the generated contract and in the "
               "reference region"),
@@ -601,19 +671,26 @@ def editor_decision(action):
 
 OCCASION_HELP = (
     ("session-start", "a session begins"),
-    ("ask", "the human's statement is being read and gaps are being grilled"),
+    ("ask", "a human reply is being read"),
     ("plan", "a plan is being written or audited"),
     ("act", "a tool is about to be used"),
-    ("answer", "every answer"),
+    ("answer", "an answer is about to be written"),
+    ("on-mistake", "a command produced no progress, or failed"),
 )
 
 HOOK_HELP = (
     ("enabled", "the master switch. false writes a wiring file with no hooks: nothing is installed. "
                 "Any other value is read as true and reported"),
     ("session_start", "run the self-check when a session begins"),
+    ("subagent_start", "hand the child agent its brief when a subagent starts"),
     ("user_prompt", "advance the state machine and report it on each human message"),
     ("pre_tool_use", "the gate. Switching it off stops everything being refused"),
     ("post_tool_use", "warn when a command produced no progress"),
+    ("subagent_stop", "record what a subagent reported when it stops"),
+    ("stop", "refuse to let a round that has reported end without closing"),
+    ("pre_compact", "record that the conversation is about to be compacted"),
+    ("session_end", "record the end of a session"),
+    ("error_occurred", "record an error the agent hit"),
 )
 
 # What each gate demands, next to the transition that runs it. This was prose in the rules document and
@@ -634,37 +711,45 @@ GATE_HELP = {
 
 
 def render_vocabulary():
-    """Render the policy file's interface as comments. Pure, so the file can be compared to it."""
-    lines = ["# Every identifier this file may use, and what it means.",
-             "# Rendered by `python .github/ocf/ocf.py reload` from the tables in ocf.py, so it cannot",
-             "# describe a key the engine does not read, or miss one it does.",
+    """Render the policy file's interface as a section of the configuration guide.
+
+    Pure, so the file can be compared to it. This used to be rendered into `policy.toml` as comments,
+    which put eighty lines of reference text into the file a human opens to change six - and the
+    pointer that file carried named a guide the deployer never received, because the root of this
+    repository is not what installing copies.
+    """
+    lines = ["```text",
+             "Every identifier the policy file may use, and what it means.",
+             "Rendered by `python .github/ocf/ocf.py reload` from the tables in ocf.py, so it cannot",
+             "describe a key the engine does not read, or miss one it does.",
              "",
-             "# [sections]"]
-    lines += ["#   %-14s %s" % (name, help_text) for name, help_text in SECTION_HELP]
+             "[sections]"]
+    lines += ["  %-14s %s" % (name, help_text) for name, help_text in SECTION_HELP]
     lines += ["",
-              "# [rule] fields. This region is generated - edit the rules, not this text."]
-    lines += ["#   %-14s %s" % (name, help_text) for name, help_text in RULE_FIELD_HELP]
+              "[rule] fields:"]
+    lines += ["  %-14s %s" % (name, help_text) for name, help_text in RULE_FIELD_HELP]
     lines += ["",
-              "# [rule.if] conditions. Each key is one condition; the value is what it compares against,",
-              "# which is usually a regex or a number."]
+              "[rule.if] conditions. Each key is one condition; the value is what it compares against,",
+              "which is usually a regex or a number."]
     # The registry, in its own order - which is the order this region has documented conditions in
     # since it was first generated. `CONDITIONS` is defined below, beside the evaluators it names; a
     # function body is the one place where that costs nothing.
-    lines += ["#   %-22s %s" % (name, condition.help)
+    lines += ["  %-22s %s" % (name, condition.help)
               for name, condition in CONDITIONS.items()]
     lines += ["",
-              "# computed flags, named by the `computed` condition:"]
-    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in COMPUTED_HELP]
+              "computed flags, named by the `computed` condition:"]
+    lines += ["  %-18s %s" % (name, help_text) for name, help_text in COMPUTED_HELP]
     lines += ["",
-              "# `result` accepts:"]
-    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in ACTION_HELP]
+              "`result` accepts:"]
+    lines += ["  %-18s %s" % (name, help_text) for name, help_text in ACTION_HELP]
     lines += ["",
-              "# the moments a soft rule may name in its occasion. A hard rule names a state in the same",
-              "# key - one key, two sets of values, and the kind decides which are legal:"]
-    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in OCCASION_HELP]
+              "the moments a soft rule may name in its occasion. A hard rule names a state in the same",
+              "key - one key, two sets of values, and the kind decides which are legal:"]
+    lines += ["  %-18s %s" % (name, help_text) for name, help_text in OCCASION_HELP]
     lines += ["",
-              "# [hooks] switches:"]
-    lines += ["#   %-18s %s" % (name, help_text) for name, help_text in HOOK_HELP]
+              "[hooks] switches:"]
+    lines += ["  %-18s %s" % (name, help_text) for name, help_text in HOOK_HELP]
+    lines += ["```"]
     return "\n".join(lines)
 
 
@@ -690,10 +775,6 @@ def policy_findings(policy):
         problems.append("[system] enabled must be true or false; got %r. The master switch has no "
                         "third spelling - \"switch\" belongs to a rule's own enabled line - and an "
                         "unrecognised value is read as true, so the gate stays armed" % (master,))
-    for key in sorted(policy_value(policy, "limits")):
-        if key not in DEFAULT_POLICY["limits"]:
-            problems.append("[limits] unknown key %r; the engine knows %s"
-                            % (key, ", ".join(sorted(DEFAULT_POLICY["limits"]))))
     for key in sorted(policy_value(policy, "hooks")):
         if key not in DEFAULT_POLICY["hooks"]:
             problems.append("[hooks] unknown key %r; the engine knows %s"
@@ -743,6 +824,16 @@ def policy_findings(policy):
             problems.append("%s: enabled must be true, false or \"switch\"; got %r. true means the "
                             "rule holds whatever the master switch says, \"switch\" (the default) "
                             "means the maintenance window suspends it" % (where, state))
+        # The number a counting rule compares against, on the rule itself. `failure-budget` is the
+        # only counting rule today, and it has to carry one: without it the post-tool counter raises
+        # on every command, and an exception on that path is swallowed rather than reported.
+        budget = rule.get("budget")
+        if budget is None:
+            if rule.get("id") == FAILURE_BUDGET_RULE:
+                problems.append("%s: carries no `budget`, so it has nothing to count against" % where)
+        elif isinstance(budget, bool) or not isinstance(budget, int) or budget < 1:
+            problems.append("%s: budget must be a whole number of one or more; got %r"
+                            % (where, budget))
         # Two keys, one per kind: a hard rule carries a verdict in `result`, a soft rule carries the
         # sentence to inject under SOFT_SENTENCE_KEY. Folding them into one local made the verdict check
         # below read the soft key, which is None for every hard rule - and a validator that stops
@@ -836,11 +927,14 @@ INSTRUCTIONS_REL = ".github/copilot-instructions.md"
 INSTRUCTIONS_BEGIN = "<!-- OCF:GENERATED -->"
 INSTRUCTIONS_END = "<!-- OCF:END -->"
 
-# The policy file is hand-written except for the region holding the vocabulary, which is rendered from
-# the tables below. Its markers are TOML comments rather than HTML ones, which is the only way in which
-# the two generated regions differ.
-VOCAB_BEGIN = "# OCF:VOCABULARY:BEGIN"
-VOCAB_END = "# OCF:VOCABULARY:END"
+# The configuration guide is where the policy's interface is written down, because the policy file is
+# data and nothing else: a file whose content changes behaviour should hold nothing that cannot change
+# behaviour. The guide is installed with the rest of .github. It used to sit in the repository root,
+# which is not what installing copies - so the pointer `policy.toml` carried aimed at a file that
+# existed here and nowhere the deployer was.
+GUIDE_REL = ".github/ocf/POLICY-GUIDE.md"
+VOCAB_BEGIN = "<!-- OCF:VOCABULARY:BEGIN -->"
+VOCAB_END = "<!-- OCF:VOCABULARY:END -->"
 
 # The rules document is hand-written prose with one generated region in the middle: the part of it that
 # is computable from the tables. Markdown markers, because that is what the file is.
@@ -864,6 +958,51 @@ def soft_text(rule, policy):
     """
     key = SOFT_SENTENCE_KEY if rule_switch(rule, policy) else "else"
     return str(rule.get(key) or "").strip()
+
+
+# Which moments reach the model in which state. One table: the state is what the hook knows for
+# certain when a turn begins, and the moment is what the sentence is about. A rule whose occasion is
+# not in the current state's row is not in front of the model this turn.
+STATE_MOMENTS = {
+    "ready": (),
+    "asking": ("ask", "answer"),
+    "planning": ("plan", "answer"),
+    "executing": ("act", "answer"),
+    "reporting": ("act", "answer"),
+    "blocked": ("answer",),
+}
+
+
+def render_soft_rules(policy, moments):
+    """The soft-rule lines to hand the model for these moments, or "" when none apply.
+
+    The standing contract used to carry every soft rule on every turn. Handing them over per turn
+    instead means the model reads guidance about planning while it is planning and not while it is
+    waiting for a human - the same body of text either way, with only the moment deciding which part
+    of it is in view.
+
+    A rule that is off says its `else` here, or nothing when it has none. The text is printed as the
+    human wrote it, line by line: collapsing it onto one line ran the parts of a sentence together
+    (`self-review.Every`) and threw away the list structure the reader needs.
+    """
+    wanted = set(moments)
+    lines = []
+    for rule in soft_rules(policy):
+        occasion = set(comma_list((rule.get("if") or {}).get("occasion", "")))
+        if not (occasion & wanted):
+            continue
+        text = soft_text(rule, policy)
+        if not text:
+            continue
+        if rule_switch(rule, policy):
+            lines.append("- **%s**" % str(rule.get("label") or rule.get("id") or "rule").strip())
+        else:
+            lines.append("- (off)")
+        lines.extend("    %s" % line.strip() for line in text.splitlines() if line.strip())
+        exception = rule.get("unless")
+        if isinstance(exception, str) and exception.strip():
+            lines.append("    unless: %s" % " ".join(exception.split()))
+    return "\n".join(lines)
 
 
 def one_line(text):
@@ -949,32 +1088,40 @@ def render_instructions(policy):
               "",
               "When a gate refuses, fix the precondition it names - never rewrite your way around it.",
               "",
-              "## Soft rules",
+              "## Soft rules are delivered by the hook",
               "",
-              "Prose for a moment in the work. Each names the moments it is in force at; the exception "
-              "is yours to judge.",
+              "Soft rules arrive from the hook, once per turn, filtered to the state the machine is "
+              "in. With the user_prompt hook switched off they do not arrive at all.",
+              "",
+              "## Two channels, and they fail separately",
+              "",
+              "This file reaches you through the editor's custom instructions, which is not the hook "
+              "mechanism: it arrives even in a session where no hook ever runs. The rules do not. A "
+              "gate that was never installed is silent in exactly the same way as a gate with nothing "
+              "to object to, and every other check in this project runs through the engine and so "
+              "reports PASS either way. So run both tests below before your first answer in a session "
+              "and state what they found.",
+              "",
+              "1. What actually arrived. A live hook returns text on every human turn and the editor "
+              "puts it into your context, so a turn it served carries a marker. Read the marker, "
+              "because there are three and they mean different things. `OCF state: <state>` is the "
+              "gate armed. `OCF: the master switch is off` is the gate disarmed by a human: nothing is "
+              "enforced, so no rule may be reported as satisfied, and that is not a fault. `OCF: the "
+              "hook errored` is the gate alive but faulty: say so, and treat everything it would have "
+              "enforced as absent. A turn with no marker at all means the hook did not run, whatever "
+              "any file says. This is the only test that cannot be fooled by a healthy engine behind a "
+              "dead hook, and it costs nothing.",
+              "2. `python .github\\ocf\\liveness.py` (`python3` elsewhere). It reads the wiring, the "
+              "editor switch, this workspace's session store and the local chat agent's hook log, and "
+              "answers one of ALIVE, NOT-INSTALLED, DISABLED, STALE or NO-EVIDENCE. NO-EVIDENCE means "
+              "it cannot tell: the agent-host harnesses run file hooks inside their own runtime, whose "
+              "log it cannot read, so it neither confirms nor rules out.",
+              "",
+              "A marker that says the gate is off, or ALIVE, is the only thing that means the gate is "
+              "in force. Otherwise treat the approval requirement and the protected list as absent "
+              "rather than met, say which test failed, and do not describe the gate as working. Never "
+              "report a verdict you did not run, and never upgrade one of them into ALIVE.",
               ""]
-    written = 0
-    for rule in soft_rules(policy):
-        text = soft_text(rule, policy)
-        if not text:
-            continue
-        moments = ", ".join(comma_list((rule.get("if") or {}).get("occasion", ""))) or "always"
-        if not rule_switch(rule, policy):
-            # Off, and carrying something to say about being off. The label describes the rule as it
-            # reads while it is on, so printing it here would caption the other half with the wrong
-            # sentence; the text stands on its own.
-            lines.append("- (%s) %s" % (moments, one_line(text)))
-            written += 1
-            continue
-        label = str(rule.get("label") or rule.get("id") or "rule").strip()
-        lines.append("- **%s** (%s) - %s" % (label, moments, one_line(text)))
-        exception = rule.get("unless")
-        if isinstance(exception, str) and exception.strip():
-            lines.append("  unless: %s" % one_line(exception))
-        written += 1
-    if not written:
-        lines += ["No soft rule has anything to say right now."]
     return "\n".join(lines)
 
 
@@ -993,22 +1140,20 @@ def hook_enabled(policy, event):
     """
     if not strict_bool(policy_value(policy, "hooks.enabled")):
         return False
-    for switch, name, _ in HOOK_EVENTS:
-        if name == event:
-            return strict_bool(policy_value(policy, "hooks." + switch))
-    return False
+    entry = hook_event(event)
+    return entry is not None and strict_bool(policy_value(policy, "hooks." + entry.switch))
 
 
 def render_hooks_json(policy):
     """Render the wiring file from the switches. Pure, so the file on disk can be compared to it."""
     body = {}
-    for switch, event, timeout in HOOK_EVENTS:
-        if not hook_enabled(policy, event):
+    for entry in HOOK_EVENTS:
+        if not hook_enabled(policy, entry.event):
             continue
-        body[event] = [{"type": "command",
-                        "command": "python3 %s %s" % (ENTRY_REL, HOOK_SUBCOMMAND),
-                        "windows": "python %s %s" % (ENTRY_REL, HOOK_SUBCOMMAND),
-                        "timeout": timeout}]
+        body[entry.event] = [{"type": "command",
+                              "command": "python3 %s %s" % (ENTRY_REL, HOOK_SUBCOMMAND),
+                              "windows": "python %s %s" % (ENTRY_REL, HOOK_SUBCOMMAND),
+                              "timeout": entry.timeout}]
     return json.dumps({"hooks": body}, indent=2) + "\n"
 
 
@@ -1048,11 +1193,12 @@ def render_reference(policy):
               "In file order, first match wins. The conditions are named rather than quoted: the "
               "values live in `.github/ocf/policy.toml`, which is where they are meant to be read and "
               "changed. Every rule follows the master switch; the three spellings of a rule's own ",
-              "`enabled` line, and which one is the default, are in that file's vocabulary region.", ""]
+              "`enabled` line, and which one is the default, are in the vocabulary section of ",
+              "`.github/ocf/POLICY-GUIDE.md`.", ""]
     # No per-rule switch marker here. Which rules the switch happens to be holding is state, and a
     # document that renders state disagrees with itself the moment the human flips the switch. Which
-    # spelling a rule uses is configuration, but it is already in the vocabulary region, and reading
-    # the `enabled` line a second time is how two answers to one question start.
+    # spelling a rule uses is configuration, but it is already in that vocabulary, and reading the
+    # `enabled` line a second time is how two answers to one question start.
     for rule in policy_value(policy, "rule"):
         identity = rule.get("id", "unnamed")
         kind = str(rule.get("kind", "hard")).strip().lower()
@@ -1128,7 +1274,7 @@ def hooks_note(root, policy, result):
     """
     if not result.changed:
         return ""
-    off = [name for switch, name, _ in HOOK_EVENTS if not hook_enabled(policy, name)]
+    off = [entry.event for entry in HOOK_EVENTS if not hook_enabled(policy, entry.event)]
     if not hook_enabled(policy, "PreToolUse"):
         return (" The gate is not installed now, so nothing is refused. Reload the VS Code window for "
                 "it to take effect: hooks are read when the window starts.")
@@ -1155,7 +1301,7 @@ GENERATED = (
     Generated(INSTRUCTIONS_REL, render_instructions, (INSTRUCTIONS_BEGIN, INSTRUCTIONS_END), None),
     # The vocabulary is the engine's, not the file's, so its renderer ignores the policy - but every
     # renderer in this table takes one, so that the table has one shape.
-    Generated(POLICY_REL, lambda policy: render_vocabulary(), (VOCAB_BEGIN, VOCAB_END), None),
+    Generated(GUIDE_REL, lambda policy: render_vocabulary(), (VOCAB_BEGIN, VOCAB_END), None),
     Generated(REFERENCE_REL, render_reference, (REFERENCE_BEGIN, REFERENCE_END), None),
     Generated(HOOKS_REL, render_hooks_json, None, hooks_note),
 )
@@ -1836,8 +1982,9 @@ CONDITIONS = {
         "context", lambda context, value: context.state in comma_list(value), None, (),
         "the occasion a rule is for. One key, two sets of values: a hard rule names the states "
         "(ready, asking, planning, executing, reporting, blocked), a soft rule names the moments in "
-        "the conversation (session-start, ask, plan, act, answer). The kind decides which are legal, "
-        "and naming a value from the other set is reported rather than silently never firing"),
+        "the conversation (session-start, ask, plan, act, answer, on-mistake). The kind decides "
+        "which are legal, and naming a value from the other set is "
+        "reported rather than silently never firing"),
     "tool": Condition(
         "context", lambda context, value: context.tool in comma_list(value), None, (),
         "the tool name as the editor reports it"),
@@ -2097,6 +2244,17 @@ def emit_posttool_context(text):
     out(json.dumps(payload, ensure_ascii=True))
 
 
+def emit_block(event, reason):
+    """What Stop and SubagentStop read, which is not what PreToolUse reads.
+
+    Read off the consumer rather than guessed: those two look at `hookSpecificOutput.decision` and
+    `.reason`. A hook answering them with `permissionDecision` would be answering a question nobody
+    asked, and the agent would simply stop as if nothing had objected.
+    """
+    payload = {"hookSpecificOutput": {"hookEventName": event, "decision": "block", "reason": reason}}
+    out(json.dumps(payload, ensure_ascii=True))
+
+
 def check_pretooluse(root, policy, payload):
     context = Context(root, policy, payload)
     action, rule_id, reason = decide(context)
@@ -2106,48 +2264,248 @@ def check_pretooluse(root, policy, payload):
 
 
 def cmd_hook(root, argv):
+    """One entry point for every event, and the outermost try is the reason it is shaped this way.
+
+    Everything that can fail lives inside the try. It did not, and the cost of that was measured rather
+    than imagined: a crash while reading the switches happened above the handler, so the host saw an
+    errored hook and denied every call - including the control-plane calls that would have let the agent
+    record that it was stuck. A fail-safe that also removes the way out is not a fail-safe.
+    """
     try:
         policy, warnings = load_policy(root)
     except Exception as exc:
         policy, warnings = dict(STRICT_POLICY), [("system", str(exc))]
-    payload = read_payload()
-    event = payload.get("hook_event_name") or (argv[0] if argv else "")
-    if not hook_enabled(policy, event):
-        # Switched off is silent, not "allowed": no output means no decision to make, and the events
-        # this program does not read at all land here too.
-        return 0
+    payload = {}
+    event = ""
     try:
-        if event == "PreToolUse":
-            action, rule_id, reason, context = check_pretooluse(root, policy, payload)
-            if action != "allow":
-                reason = "\n".join([reason] + context.infos)
-            emit_pretooluse(action, reason)
+        payload = read_payload()
+        event = str(payload.get("hook_event_name") or (argv[0] if argv else ""))
+        entry = hook_event(event)
+        if entry is None or not hook_enabled(policy, entry.event):
+            # Switched off is silent, not "allowed". A hook that answers `allow` suppresses the
+            # editor's own approval prompt, so an uninstalled gate must say nothing at all.
             return 0
-        if event == "UserPromptSubmit":
-            text = handle_prompt(root, policy, payload) + notices_text(policy, warnings)
-            emit_context("UserPromptSubmit", text)
+        # The master switch takes the gate out of the way rather than the program off. It is read
+        # before the event table is consulted for anything but the event's kind: `policy_value` is a
+        # dictionary lookup, so a broken table cannot keep a human from switching the system off, which
+        # is exactly what happened when a fault above the handler denied every call - including the
+        # control-plane calls that would have recorded it.
+        disarmed = not strict_bool(policy_value(policy, "system.enabled"))
+        if disarmed and entry.kind in ("gate", "block"):
+            # No `allow`, because that suppresses the editor's own approval prompt and would leave the
+            # human less protected than with no gate installed; and no `deny`, because nothing is
+            # enforced. Silence is the only answer that is true here.
             return 0
-        if event in ("SessionStart", "SessionStartReload"):
-            text = handle_session_start(root, policy) + notices_text(policy, warnings)
-            emit_context("SessionStart", text)
-            return 0
-        if event == "PostToolUse":
-            text = handle_post_tool(root, policy, payload)
-            if text:
-                emit_posttool_context(text)
-            return 0
-        # An event this program does not read never reaches here: hook_enabled turned it away above.
-        return 0
-    except OcfError as exc:
-        if event == "PreToolUse":
-            emit_pretooluse("deny", "Blocked by the orchestrator: %s" % exc.tagged())
-        elif event != "PostToolUse":
-            out(exc.tagged())
-        return 0
-    except Exception as exc:  # fail safe: an internal fault denies rather than allows
-        if event == "PreToolUse":
-            emit_pretooluse("deny", "[system] internal error in the gate, denied to stay safe: %r" % (exc,))
-        return 0
+        run_event(root, policy, warnings, entry, payload, disarmed)
+    except Exception as exc:  # fail safe, and the escape hatch stays open
+        report_failure(root, policy, event, payload, exc)
+    return 0
+
+
+def run_event(root, policy, warnings, entry, payload, disarmed=False):
+    """What each event does, in one place, keyed on the table rather than on a chain of comparisons.
+
+    `disarmed` reaches only the events that carry text, and it adds one line to them. Enforcement is
+    already gone by the time this is called - what is left is the reporting, and the reporting has to
+    continue, because the two things it carries are the ones that must not go silent: what the
+    components are doing, and the rules a human deliberately kept on (`plan-template`,
+    `report-template`, `quality-self-evaluation` say `enabled = true`, so the master switch does not
+    reach them and dropping them here would switch off a rule nobody switched off).
+    """
+    event = entry.event
+    notice = "\n" + disarm_notice() if disarmed else ""
+    if event == "PreToolUse":
+        action, rule_id, reason, context = check_pretooluse(root, policy, payload)
+        if action != "allow":
+            reason = "\n".join([reason] + context.infos)
+        emit_pretooluse(action, reason)
+        return
+    if event == "UserPromptSubmit":
+        emit_context(event, handle_prompt(root, policy, payload) + notices_text(policy, warnings)
+                     + notice)
+        return
+    if event == "SessionStart":
+        emit_context(event, handle_session_start(root, policy, warnings)
+                     + notices_text(policy, warnings) + notice)
+        return
+    if event == "SubagentStart":
+        text = handle_subagent_start(root, policy, payload)
+        if text:
+            emit_context(event, text + notice)
+        return
+    if event == "PostToolUse":
+        text = handle_post_tool(root, policy, payload)
+        if text:
+            emit_posttool_context(text)
+        return
+    if event == "Stop":
+        blocked, reason = gate_stop(root, policy)
+        if blocked:
+            emit_block(event, reason)
+        return
+    if event == "SubagentStop":
+        text = handle_subagent_stop(root, policy, payload)
+        if text:
+            emit_block(event, text)
+        return
+    # PreCompact, SessionEnd and ErrorOccurred are recorded and never answered: they have no consumer
+    # on the other side, so a line on stdout would be parsed by nobody.
+    record_event(root, policy, event, payload)
+
+
+def disarm_notice():
+    """The one sentence that a switched-off gate has to say, because nothing else can be inferred.
+
+    A hook that says nothing and a hook that is dead look identical from the outside, and only one of
+    them means "no rule may be reported as satisfied".
+    """
+    return ("OCF: the master switch is off - [system] enabled = false in %s - so no rule is in force: "
+            "nothing is refused, nothing is gated, and no rule may be reported as satisfied."
+            % POLICY_REL)
+
+
+def report_failure(root, policy, event, payload, exc):
+    """What to do when this program is the thing that is broken.
+
+    Four answers, because the events do not carry the same kind of power over the agent. A gate that
+    cannot decide refuses - except for the two categories that have to survive everything else, because
+    they are how a broken gate gets repaired: reading, and a command whose every statement invokes this
+    program, which is how the human learns what broke and how the agent records that it is stuck. A
+    stop-blocker that cannot decide says nothing, because blocking there would not restrain the agent,
+    it would trap it. A context event hands the fault to the model, which is strictly better than the
+    raw line this used to print, since a raw line is not JSON and the host can only log it.
+    """
+    try:
+        journal(root, policy, read_state(root, policy),
+                "%s: internal error, so the gate answered nothing it planned to: %r" % (event, exc))
+    except Exception:
+        pass
+    entry = hook_event(event)
+    if entry is None:
+        return
+    if entry.kind == "gate":
+        if computed_flags(payload_command(payload))["control_plane"]:
+            emit_pretooluse("allow",
+                            "[system] the gate errored (%r). This command only runs the gate's own "
+                            "entry point, so it is allowed through: that is how a broken gate is "
+                            "diagnosed, and how `advance blocked` gets recorded." % (exc,))
+            return
+        try:
+            klass = tool_class(policy, str(payload.get("tool_name") or ""))
+        except Exception:
+            klass = ""
+        if klass in ("read", "session"):
+            emit_pretooluse("allow",
+                            "[system] the gate errored (%r), so nothing is enforced. Reading and "
+                            "session tools stay open on purpose: a gate that refuses to let anyone "
+                            "read it is a gate nobody can repair." % (exc,))
+            return
+        emit_pretooluse("deny", "[system] internal error in the gate, refused to stay safe: %r"
+                        % (exc,))
+        return
+    if entry.kind in ("context", "context-list"):
+        message = ("OCF: the hook errored, so this event contributed nothing: %r" % (exc,))
+        if entry.kind == "context-list":
+            emit_posttool_context(message)
+        else:
+            emit_context(entry.event, message)
+    # `block` and `silent` say nothing: blocking on a fault would trap the agent rather than restrain it.
+
+
+def payload_command(payload):
+    """The command a payload carries, for the one test that must work with no policy at all."""
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("command", "code"):
+        value = tool_input.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
+# The one state in which a round may not end, and the rule name the refusal is reported under.
+ROUND_NOT_CLOSED = "round-not-closed"
+
+
+def gate_stop(root, policy):
+    """Refuse to let a round that has reported end without closing.
+
+    Only `reporting` is refused, and that is the narrowest condition still worth enforcing: the state
+    itself says the work is finished and the contract's last step of a round is `advance ready`, so the
+    only agent this fires on is one that skipped the step. Refusing in `executing` would be a different
+    thing entirely - the agent stops there legitimately, to wait - and a blocker that fires whenever an
+    agent goes idle is a trap, not a gate. One command clears this, so the loop it can cause is bounded
+    to a single extra turn.
+    """
+    try:
+        state = read_state(root, policy)
+    except Exception:
+        return (False, "")
+    if state != "reporting":
+        return (False, "")
+    journal(root, policy, state, "stop refused: the round was reported but never closed")
+    return (True, "[%s] This round is in `reporting`: it has been reported but not closed, so it is "
+                  "still the current round. Run `python %s advance ready` to close it, or `advance "
+                  "blocked` if something is outstanding, then stop."
+            % (ROUND_NOT_CLOSED, ENTRY_REL))
+
+
+def handle_subagent_start(root, policy, payload):
+    """Journaled and deliberately mute.
+
+    SubagentStart can carry context into the child, and the auditor's brief is a good thing to carry.
+    It is not carried here because the payload shape is documented nowhere this project can read, and a
+    hook that guesses either misses or injects the wrong thing. The journal line shows the shape, so the
+    next change is made from evidence.
+    """
+    record_event(root, policy, "SubagentStart", payload)
+    return None
+
+
+def handle_subagent_stop(root, policy, payload):
+    """Journaled, then the auditor's own P0 count is read off its report."""
+    record_event(root, policy, "SubagentStop", payload)
+    message = payload.get("last_assistant_message")
+    if isinstance(message, str) and message.strip():
+        record_audit_result(root, policy, {
+            "tool_input": {"agentName": payload.get("agent_name") or "a subagent"},
+            "tool_response": message,
+        })
+    return None
+
+
+def record_event(root, policy, event, payload):
+    """One journal line per occurrence, carrying enough of the payload to see its shape.
+
+    It answers nothing: these events have no consumer on the other side, so stdout would be parsed by
+    nobody. The line is the point - the payloads of the events this project has never handled are
+    documented nowhere it can read, and looking at what actually arrives is the honest way to settle
+    that instead of guessing at field names.
+    """
+    try:
+        journal(root, policy, read_state(root, policy),
+                "%s: %s" % (event, compact_payload(payload)))
+    except Exception:
+        return
+
+
+def compact_payload(payload, limit=400):
+    """A payload as one bounded single-line ASCII string, because a journal entry is one line."""
+    parts = []
+    for key in sorted(payload):
+        if key == "hook_event_name":
+            continue
+        if key in ("transcript_path", "cwd"):
+            parts.append("%s=<path>" % key)
+            continue
+        value = payload[key]
+        if isinstance(value, (dict, list)):
+            text = json.dumps(value, ensure_ascii=True, sort_keys=True)
+        else:
+            text = str(value)
+        parts.append("%s=%s" % (key, " ".join(text.split())[:160]))
+    return " ".join(parts)[:limit]
 
 
 # A command that never reports a result has no place in a workflow whose rule is "visible and
@@ -2167,6 +2525,13 @@ NO_PROGRESS_PATTERNS = (
 
 EXIT_CODE_RE = re.compile(r"(?i)exited with code (-?\d+)")
 FAILURE_BUDGET_RULE = "failure-budget"
+
+# The one artifact in a round that the agent asking for the audit does not write.
+SUBAGENT_TOOL = "runSubagent"
+# The auditor's own report format: a `## P0 (N)` heading, which `.github/agents/plan-auditor.agent.md`
+# already requires of every report it writes - so the gate reads a shape that exists for the reviewer's
+# own reader rather than adding a second format for the hook's benefit.
+AUDIT_COUNT_RE = re.compile(r"(?mi)^#{1,6}\s*P0\s*\(\s*(\d+)\s*\)")
 
 # A command whose exit code IS its answer: `grep` returns 1 for "no match", `diff` for "they differ".
 # Counting those as failures would arm the budget on a command that answered the question it was asked.
@@ -2215,26 +2580,65 @@ def count_exit_code_failure(root, policy, payload, response):
             "you need from the human." % (codes[-1], count, budget))
 
 
+def record_audit_result(root, policy, payload):
+    """Take the P0 count off a subagent's own report, and say in the journal where it came from.
+
+    `zero-p0` is a gate, so the number behind it is an authorization, and a number the audited party
+    can write is not one. It has no writer on the command line at all - `p0-is-an-audit-result`
+    refuses that - and is read here instead, from the reply of the subagent that was dispatched to
+    audit. Dropping the old value when a report carries no count is the point of the else branch: a
+    zero left standing from an earlier audit is exactly the value the gate would accept.
+    """
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        tool_input = {}
+    agent = str(tool_input.get("agentName") or tool_input.get("agent_name") or "a subagent")
+    response = payload.get("tool_response")
+    if not isinstance(response, str):
+        response = "" if response is None else str(response)
+    found = AUDIT_COUNT_RE.search(response)
+    facts = load_facts(root, policy)
+    if found:
+        facts["p0_count"] = found.group(1)
+        save_facts(root, policy, facts)
+        journal(root, policy, read_state(root, policy),
+                "audit: p0_count=%s, read off the report from %s" % (found.group(1), agent))
+        return
+    if facts.pop("p0_count", None) is not None:
+        save_facts(root, policy, facts)
+    journal(root, policy, read_state(root, policy),
+            "audit: %s reported no P0 count, so p0_count is unset" % agent)
+
+
 def handle_post_tool(root, policy, payload):
     """Return a warning to inject when a command produced no progress, else None."""
     tool = payload.get("tool_name") or ""
+    if tool == SUBAGENT_TOOL:
+        record_audit_result(root, policy, payload)
+        return None
     if tool_class(policy, tool) != "exec":
         return None
     response = payload.get("tool_response")
     if not isinstance(response, str):
         response = "" if response is None else str(response)
     budget_rule = rule_by_id(policy, FAILURE_BUDGET_RULE)
+    warning = None
     if budget_rule is not None and rule_switch(budget_rule, policy):
-        counted = count_exit_code_failure(root, policy, payload, response)
-        if counted:
-            return counted
-    for pattern, why in NO_PROGRESS_PATTERNS:
-        if pattern.search(response):
-            journal(root, policy, read_state(root, policy), "no-progress command: %s" % why)
-            return ("OCF: the previous command did not report progress, because %s. Do not treat it as a "
-                    "completed success. Split the command, or record it with ocf.py fail \"<reason>\" and "
-                    "tell the human what you tried." % why)
-    return None
+        warning = count_exit_code_failure(root, policy, payload, response)
+    if warning is None:
+        for pattern, why in NO_PROGRESS_PATTERNS:
+            if pattern.search(response):
+                journal(root, policy, read_state(root, policy), "no-progress command: %s" % why)
+                warning = ("OCF: the previous command did not report progress, because %s. Do not treat "
+                           "it as a completed success. Split the command, or record it with ocf.py "
+                           "fail \"<reason>\" and tell the human what you tried." % why)
+                break
+    if warning is None:
+        return None
+    # A mistake is the moment a soft rule written for it is for, and the hook is the only thing that
+    # knows one happened at the time it happened.
+    guidance = render_soft_rules(policy, ("on-mistake",))
+    return warning + (("\n" + guidance) if guidance else "")
 
 
 INTAKE_STATES = ("ready", "asking")
@@ -2308,6 +2712,51 @@ def close_intake(root, policy):
     return cleared or dropped
 
 
+# What survives a round, and what survives a full reset. One sweep, two keep lists: the whole
+# difference between "this round is over" and "throw everything away" is which tuple is handed to it,
+# and nothing else may be deleted by one and not the other without saying so here.
+#
+# A round keeps the record of itself. The journal and the two logs are what happened, and a round
+# boundary is not a place to lose the history of the rounds before it. The glossary is a document the
+# model wrote rather than a record of where the machine is, so it outlives everything.
+ROUND_KEEP = ("journal.log", "exec.log", "glossary.md", "state")
+RESET_KEEP = ("glossary.md",)
+
+
+def clear_state_dir(root, policy, keep):
+    """Remove every child of the state directory that `keep` does not name. Returns what went.
+
+    A sweep rather than a list of files to delete: a named list is a list that has to be extended
+    every time something new is written under here, and the failure mode is silent - the new file
+    survives a boundary it should not have survived.
+    """
+    directory = state_dir(root, policy)
+    if not os.path.isdir(directory):
+        return []
+    dropped = []
+    for name in sorted(os.listdir(directory)):
+        if name in keep:
+            continue
+        path = os.path.join(directory, name)
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+        dropped.append(name)
+    return dropped
+
+
+def clear_round(root, policy):
+    """End the round: drop every fact, the plan, and the intake transcript.
+
+    Called on every transition into `ready`, which is the only moment the machine is between rounds.
+    What the round accumulated is evidence about THAT round - the audit's verdict above all - and a
+    verdict that survives the round it was given in is a verdict the next round can be satisfied by
+    without ever being audited.
+    """
+    return clear_state_dir(root, policy, ROUND_KEEP)
+
+
 def handle_prompt(root, policy, payload):
     state = read_state(root, policy)
     facts = load_facts(root, policy)
@@ -2352,16 +2801,31 @@ def handle_prompt(root, policy, payload):
         outstanding = context_missing(root, policy)
         if outstanding:
             # The items, not the duty. How they are asked for is the `intake-grilling` soft rule, and
-            # that is already in front of the model on every turn. Repeating it here gave one soft rule
-            # two homes, and the human can switch off only one of them.
+            # that is delivered by this same hook below. Repeating it here gave one soft rule two
+            # homes, and the human can switch off only one of them.
             lines.append("Intake items not derivable from context: %s." % ", ".join(outstanding))
+    guidance = render_soft_rules(policy, STATE_MOMENTS.get(state, ()))
+    if guidance:
+        lines.append(guidance)
     return "\n".join(lines)
 
 
-def handle_session_start(root, policy):
-    lines = ["OCF self-check (classified):"]
-    for kind, text in run_selftest(root, policy):
-        lines.append("  [%s] %s" % (kind, text))
+def handle_session_start(root, policy, warnings=()):
+    """The one-shot startup report, carrying only what can only be known at startup.
+
+    The workflow state, the flow line and the two command groups used to be repeated here, and the
+    standing contract already carries all three on every turn - the command groups from this very
+    `command_lines()` call, so the two copies could not even disagree, only spend the one turn whose
+    budget matters most. Dropping the state is load-bearing twice over: the per-turn marker is what
+    proves the hook is alive, and a second spelling of the same fact on another channel is the one
+    thing a liveness test must not have to disambiguate.
+    """
+    lines = ["OCF startup summary:"]
+    for name, status, detail in session_component_report(root, policy, warnings):
+        lines.append("  %s: %s - %s" % (name, status, detail))
+    guidance = render_soft_rules(policy, ("session-start",))
+    if guidance:
+        lines.append(guidance)
     return "\n".join(lines)
 
 
@@ -2516,6 +2980,96 @@ def run_gates(root, policy, names):
 # Self test
 # ---------------------------------------------------------------------------
 
+def state_store_findings(root, policy):
+    directory = state_dir(root, policy)
+    probe = None
+    findings = []
+    try:
+        if not os.path.isdir(directory):
+            os.makedirs(directory)
+        probe = os.path.join(directory, ".session-check-%d-%d" %
+                     (os.getpid(), int(time.time() * 1000000)))
+        descriptor = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        findings.append(("ok", "state directory is writable"))
+    except Exception as exc:
+        findings.append(("system", "state directory is not writable: %r" % (exc,)))
+    finally:
+        if probe and os.path.exists(probe):
+            try:
+                os.remove(probe)
+            except OSError as exc:
+                findings.append(("system", "cannot remove state probe %s: %r" % (probe, exc)))
+    return findings
+
+
+def canary_findings(root, policy):
+    findings = []
+    armed = dict(policy)
+    armed["system"] = dict(policy_value(armed, "system"), enabled=True)
+    canaries = policy_value(policy, "selftest.canary")
+    if not canaries:
+        findings.append(("policy", "no canaries are defined in [selftest]; the gate cannot prove "
+                                   "that it is still denying"))
+    for canary in canaries:
+        expect = canary.get("expect", "deny")
+        payload = dict(canary.get("payload", {}))
+        payload.setdefault("hook_event_name", "PreToolUse")
+        try:
+            action, rule_id, _, _ = check_pretooluse(root, armed, payload)
+        except Exception as exc:
+            findings.append(("system", "canary %s raised %r" % (canary.get("id"), exc)))
+            continue
+        got = editor_decision(action)
+        if got == expect:
+            findings.append(("ok", "canary %s (%s, rule %s)"
+                                     % (canary.get("id"), got, rule_id)))
+        else:
+            findings.append(("system", "canary %s FAILED: expected %s, got %s (rule %s). The gate no "
+                                       "longer enforces what the policy says."
+                             % (canary.get("id"), expect, got, rule_id)))
+    return findings
+
+
+def session_component_report(root, policy, load_warnings=()):
+    """Return component status rows from checks the session-start hook actually runs."""
+    rows = []
+
+    def add(name, findings, clean_detail, policy_warning=False):
+        issues = [(kind, text) for kind, text in findings if kind != "ok"]
+        if not issues:
+            rows.append((name, "PASS", clean_detail))
+            return
+        kinds = {kind for kind, _ in issues}
+        if policy_warning and kinds == {"policy"}:
+            status = "WARN"
+        else:
+            status = "FAIL"
+        details = "; ".join("[%s] %s" % (kind, text) for kind, text in issues)
+        rows.append((name, status, details))
+
+    runtime = []
+    if tomllib is None:
+        runtime.append(("environment", "no TOML parser is available"))
+    add("Runtime", runtime,
+        "Python %s.%s; TOML parser available" % (sys.version_info[0], sys.version_info[1]))
+
+    policy_issues = list(load_warnings)
+    policy_issues.extend(policy_findings(policy))
+    add("Policy", policy_issues, "configuration parsed and policy identifiers are valid")
+
+    add("Hook wiring", wiring_findings(root, policy), "configured events point to the OCF hook")
+    add("Generated guidance", generated_findings(root, policy),
+        "generated contract and reference match the active policy", policy_warning=True)
+    add("State store", state_store_findings(root, policy), "state directory is writable")
+    add("Canaries", canary_findings(root, policy), "configured allow/deny probes passed")
+    if enabled(policy):
+        rows.append(("Maintenance", "PASS", "gate is armed"))
+    else:
+        rows.append(("Maintenance", "WARN", "maintenance window is open; switch-following rules are paused"))
+    return rows
+
+
 def run_selftest(root, policy):
     """Return a list of (kind, message).
 
@@ -2548,46 +3102,8 @@ def run_selftest(root, policy):
         findings.append(("policy", "system.enabled is false: %s" % window_text(policy)))
     else:
         findings.append(("ok", "system.enabled is true, so every rule is in force"))
-    try:
-        if not os.path.isdir(state_dir(root, policy)):
-            os.makedirs(state_dir(root, policy))
-        probe = os.path.join(state_dir(root, policy), ".selftest")
-        write_text(probe, "ok")
-        os.remove(probe)
-        findings.append(("ok", "state directory is writable"))
-    except Exception as exc:
-        findings.append(("system", "state directory is not writable: %r" % (exc,)))
-    # The canaries prove the machinery still denies, so they run with the maintenance window shut.
-    # Run against the file as written instead, and a human opening the window - which suspends every
-    # rule that does not say `enabled = true` - turns them red, and a red canary that means "the gate
-    # is doing exactly what the human asked" is a canary nobody reads. The window itself is not lost:
-    # it has its own finding above, which is what makes it impossible to miss.
-    armed = dict(policy)
-    armed["system"] = dict(policy_value(armed, "system"), enabled=True)
-    canaries = policy_value(policy, "selftest.canary")
-    if not canaries:
-        findings.append(("policy", "no canaries are defined in [selftest]; the gate cannot prove "
-                                   "that it is still denying"))
-    for canary in canaries:
-        expect = canary.get("expect", "deny")
-        payload = dict(canary.get("payload", {}))
-        payload.setdefault("hook_event_name", "PreToolUse")
-        try:
-            action, rule_id, _, _ = check_pretooluse(root, armed, payload)
-        except Exception as exc:
-            findings.append(("system", "canary %s raised %r" % (canary.get("id"), exc)))
-            continue
-        # `expect` is written in the editor's vocabulary rather than the policy's, and the decision is
-        # read straight from the action - never through the table the gate itself uses. Comparing both
-        # sides through that table made them agree by construction, which left the one check whose job
-        # is to notice that the gate stopped refusing unable to notice exactly that.
-        got = editor_decision(action)
-        if got == expect:
-            findings.append(("ok", "canary %s (%s, rule %s)" % (canary.get("id"), got, rule_id)))
-        else:
-            findings.append(("system", "canary %s FAILED: expected %s, got %s (rule %s). The gate no "
-                                       "longer enforces what the policy says." % (
-                                           canary.get("id"), expect, got, rule_id)))
+    findings.extend(state_store_findings(root, policy))
+    findings.extend(canary_findings(root, policy))
     return findings
 
 
@@ -2614,7 +3130,8 @@ def selftest_failed(findings):
 # it: that every event this program claims to handle is accepted, answered in that shape, and answered
 # the way the policy says. "The file is installed" and "the event arrives and a decision comes back"
 # are different claims, and the gap between them is the failure this whole program exists to expose.
-Probe = collections.namedtuple("Probe", "event what payload decision container")
+Probe = collections.namedtuple("Probe", "event what payload decision container state",
+                               defaults=("asking",))
 PAYLOAD_PROBES = (
     Probe("PreToolUse", "a command that invokes a human-only subcommand",
           {"tool_name": "run_in_terminal",
@@ -2623,11 +3140,29 @@ PAYLOAD_PROBES = (
     Probe("PreToolUse", "a tool that only reads",
           {"tool_name": "read_file", "tool_input": {"filePath": "README.md"}},
           "allow", None),
+    Probe("PreToolUse", "a command that reads this program's own state",
+          {"tool_name": "run_in_terminal",
+           "tool_input": {"command": "python .github/ocf/ocf.py status"}},
+          "allow", None),
     Probe("UserPromptSubmit", "a human message",
           {"session_id": "verify", "prompt": "hello"}, None, "str"),
     Probe("SessionStart", "a session starting", {"session_id": "verify"}, None, "str"),
+    Probe("SubagentStart", "a subagent starting", {"session_id": "verify"}, None, "none"),
     Probe("PostToolUse", "a command that reported no progress",
           {"tool_name": "run_in_terminal", "tool_response": "1.1.1\n>>\n"}, None, "list"),
+    # `block` is its own answer shape, not a variant of `deny`: Stop and SubagentStop read
+    # `hookSpecificOutput.decision`, so a hook that answered them with `permissionDecision` would be
+    # answering a question nobody asked, and the agent would stop as if nothing had objected.
+    Probe("Stop", "a round that reported but never closed", {"session_id": "verify"},
+          "block", None, "reporting"),
+    Probe("Stop", "a round in progress, where stopping is legitimate", {"session_id": "verify"},
+          None, "none", "executing"),
+    Probe("SubagentStop", "a subagent stopping", {"session_id": "verify"}, None, "none"),
+    Probe("PreCompact", "the conversation about to be compacted",
+          {"session_id": "verify", "trigger": "auto"}, None, "none"),
+    Probe("SessionEnd", "a session ending", {"session_id": "verify"}, None, "none"),
+    Probe("ErrorOccurred", "an error the agent hit",
+          {"session_id": "verify", "error": "probe"}, None, "none"),
 )
 
 # Files installing must not overwrite. `policy.toml` is the rules themselves - the human's program, and
@@ -2758,13 +3293,24 @@ def payload_findings(root, policy):
             write_text(os.path.join(probe, relative.replace("/", os.sep)),
                        read_text(os.path.join(root, relative)) or "")
         write_text(os.path.join(probe, POLICY_REL),
-                   re.sub(r"(?m)^enabled\s*=\s*(true|false)", "enabled = true",
-                          read_text(os.path.join(probe, POLICY_REL)) or "", count=1))
-        write_text(os.path.join(probe, ".orchestrator", "state"), "asking\n")
+                   set_policy_switch(set_policy_switch(
+                       read_text(os.path.join(probe, POLICY_REL)) or "", "system", "true"),
+                       "hooks", "true"))
         for entry in PAYLOAD_PROBES:
             where = "%s: %s" % (entry.event, entry.what)
+            write_text(os.path.join(probe, ".orchestrator", "state"), "%s\n" % entry.state)
             text, errors = run_hook_payload(probe, entry.event, entry.payload)
             lines = [line for line in text.splitlines() if line.startswith("{")]
+            if entry.container == "none":
+                # Recorded and never answered is the whole point of these events: they have no consumer
+                # on the other side, so silence is the correct answer and any output at all is the
+                # fault. Asserting that is also what stops "it answered something" from counting as
+                # "the event works".
+                if lines:
+                    findings.append(("system", "%s answered, but this event has no consumer on the "
+                                               "other side, so nothing should be written: %s"
+                                     % (where, lines[-1][:160])))
+                continue
             if not lines:
                 findings.append(("system", "%s produced no decision at all. stderr: %s"
                                            % (where, errors.strip()[-200:] or "empty")))
@@ -2778,10 +3324,15 @@ def payload_findings(root, policy):
             if spec.get("hookEventName") != entry.event:
                 findings.append(("system", "%s answered as %r, so the editor would route it to the "
                                            "wrong event" % (where, spec.get("hookEventName"))))
-            if entry.decision and spec.get("permissionDecision") != entry.decision:
+            # One read for both shapes: the gate answers in `permissionDecision` and the stop-blockers
+            # answer in `decision`, and a probe that checked only the first would have passed a
+            # PreToolUse-shaped answer to Stop.
+            answered = spec.get("permissionDecision") or spec.get("decision")
+            if entry.decision and answered != entry.decision:
                 findings.append(("system", "%s answered %r where the policy says %r"
-                                           % (where, spec.get("permissionDecision"), entry.decision)))
-            if entry.decision and not str(spec.get("permissionDecisionReason") or "").strip():
+                                           % (where, answered, entry.decision)))
+            if entry.decision and not str(spec.get("permissionDecisionReason")
+                                          or spec.get("reason") or "").strip():
                 findings.append(("system", "%s gave a decision with no reason, so the human cannot "
                                            "tell why" % where))
             if entry.container:
@@ -2795,8 +3346,30 @@ def payload_findings(root, policy):
         shutil.rmtree(probe, ignore_errors=True)
     if not findings:
         findings.append(("ok", "all %d hook payloads answered in the shape the editor expects, "
-                               "across all four events" % len(PAYLOAD_PROBES)))
+                               "across %d events"
+                               % (len(PAYLOAD_PROBES), len(set(p.event for p in PAYLOAD_PROBES)))))
     return findings
+
+
+def set_policy_switch(text, section, value):
+    """Set the `enabled` line inside one TOML section, leaving every other section alone.
+
+    A `count=1` substitution was enough while `[system]` held the only `enabled` key. Once `[hooks]`
+    had one too, the same substitution silently patched the wrong section - and a probe root with the
+    installation switched off answers nothing, which reads exactly like a gate that refuses nothing.
+    """
+    lines = text.splitlines()
+    try:
+        start = lines.index("[%s]" % section)
+    except ValueError:
+        return text
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("[") and not lines[index].startswith("[["):
+            break
+        if re.match(r"^enabled\s*=", lines[index]):
+            lines[index] = "enabled = %s" % value
+            break
+    return "\n".join(lines) + "\n"
 
 
 def wiring_findings(root, policy):
@@ -2824,7 +3397,8 @@ def wiring_findings(root, policy):
                                         "[hooks] enabled on and run `reload`, or leave it and "
                                         "accept that this gate is off"))
         return findings
-    for switch, event, _ in HOOK_EVENTS:
+    for entry in HOOK_EVENTS:
+        switch, event = entry.switch, entry.event
         if not hook_enabled(policy, event):
             continue
         entries = body.get(event) or []
@@ -2915,8 +3489,12 @@ def cmd_status(root, policy):
     out("enabled=%s" % ("true" if enabled(policy) else "false"))
     out("approval_required=%s" % ("yes" if approval_needed(policy, state) else "no"))
     out("policy=%s" % POLICY_REL)
-    limits_now = limits(policy)
-    out("limits=%s" % ",".join("%s:%s" % (key, limits_now[key]) for key in sorted(limits_now)))
+    try:
+        out("fail_budget=%d" % failure_budget(policy))
+    except OcfError as exc:
+        # `status` is how the agent reads the machine, so a broken policy has to stay reportable
+        # rather than turning the one readable command into an error.
+        out("fail_budget=unreadable (%s)" % exc.message)
     out("facts:")
     for key in sorted(facts):
         out("  %s=%s" % (key, facts[key]))
@@ -3014,7 +3592,7 @@ def record_failure(root, policy, reason):
         count = 0
     count += 1
     facts["fail_count"] = str(count)
-    budget = int(policy_value(policy, "limits.fail_budget"))
+    budget = failure_budget(policy)
     if count >= budget:
         facts["must_consult"] = "yes"
     save_facts(root, policy, facts)
@@ -3083,6 +3661,12 @@ def cmd_advance(root, policy, args):
     opens = target == "asking" and source != "blocked"
     if (closes or opens) and close_intake(root, policy):
         journal(root, policy, target, "intake %s" % ("closed" if closes else "opened"))
+    # After `close_intake`, never before it: that call reports whether it had anything to clear, and
+    # the sweep takes its evidence away - which would silently drop the intake line above from the
+    # journal. After `write_state` too, so the line below carries the state it moved into.
+    if target == "ready" and source != "ready":
+        dropped = clear_round(root, policy)
+        journal(root, policy, target, "round cleared: %s" % (", ".join(dropped) or "nothing"))
     journal(root, policy, target, "advance %s -> %s (%s)" % (source, target, reason))
     out("state %s -> %s" % (source, target))
     return 0
@@ -3158,10 +3742,14 @@ def cmd_approve(root, policy, args):
     write_state(root, policy, target)
     if state == "asking" and close_intake(root, policy):
         journal(root, policy, target, "intake closed: approved out of asking")
+    approved_by = os.environ.get("OCF_APPROVED_BY", "human")
     if target == "executing":
-        set_fact(root, policy, "approved_by", os.environ.get("OCF_APPROVED_BY", "human"))
+        set_fact(root, policy, "approved_by", approved_by)
         set_fact(root, policy, "approved_reason", reason)
-    journal(root, policy, target, "%s -> %s (approved: %s)" % (state, target, reason))
+    # Who approved goes in the line, not only in the fact beside it: the fact is round state and the
+    # sweep on the way back to `ready` drops it, while the journal is what a round keeps.
+    journal(root, policy, target, "%s -> %s (approved by %s: %s)"
+            % (state, target, approved_by, reason))
     out("approved, state %s -> %s" % (state, target))
     return 0
 
@@ -3176,6 +3764,29 @@ def cmd_reject(root, policy, args):
         journal(root, policy, "asking", "intake reopened: reject sends it back to asking")
     journal(root, policy, "asking", "planning -> asking (rejected: %s)" % reason)
     out("rejected, state planning -> asking")
+    return 0
+
+
+def cmd_reset(root, policy, args):
+    """Put the machine back to a clean ready. Human-only.
+
+    The way out of a state the flow cannot leave: a plan waiting for an approval nobody will give, a
+    half-finished intake, a failure counter that will not clear.
+
+    Everything under the state directory goes - the state, the facts, the plan, the intake transcript
+    and both logs - and only glossary.md is kept, because it is a document the model wrote rather than
+    a record of where the machine is. Nothing of the reset is journaled either: the journal is one of
+    the things it removes, so a reset leaves no trace. That is why it is a human command and not
+    something the machine can do to itself.
+    """
+    directory = state_dir(root, policy)
+    if not os.path.isdir(directory):
+        out("nothing to reset")
+        return 0
+    dropped = clear_state_dir(root, policy, RESET_KEEP)
+    write_state(root, policy, "ready")
+    out("state -> ready")
+    out("dropped: %s" % (", ".join(dropped) or "nothing"))
     return 0
 
 
@@ -3265,6 +3876,35 @@ def release_files(root):
     return sorted(found)
 
 
+SYSTEM_ENABLED_RE = re.compile(r"(?m)^(\s*enabled\s*=\s*)false(\s*)$")
+
+
+def armed_for_release(text):
+    """Turn the maintenance window off in the copy that ships, and only there.
+
+    `[system] enabled = false` is a development mode: the half of the gate that says for itself whether
+    the window reaches it is suspended, so the gate's own code can be edited. A release built out of one
+    shipped 0.2.0 as a gate that decided nothing while looking installed - every rule suspended, every
+    canary still denying, nothing else visibly different.
+
+    Scoped to the `[system]` section because `enabled` is also a rule key and one rule is legitimately
+    off by default, so "the first false in the file" is not the same thing as "the switch".
+    """
+    head, marker, tail = text.partition("[system]")
+    if not marker:
+        return text
+    tail = SYSTEM_ENABLED_RE.sub(r"\g<1>true\g<2>", tail, count=1)
+    return head + marker + tail
+
+
+def shipping_text(root, relative):
+    """The text a file must have in a deployed copy. One file is not the same as on disk."""
+    text = read_text(os.path.join(root, relative.replace("/", os.sep)))
+    if text is not None and relative == POLICY_REL:
+        text = armed_for_release(text)
+    return text
+
+
 def cmd_package(root, policy, args):
     """Write the release tree: the payload, the bootstrap that deploys it, and the version.
 
@@ -3284,7 +3924,7 @@ def cmd_package(root, policy, args):
     stage = os.path.join(os.path.abspath(args[0]), "ocf-gate-%s" % version)
     written = 0
     for relative in install_files(root):
-        text = read_text(os.path.join(root, relative.replace("/", os.sep)))
+        text = shipping_text(root, relative)
         if text is None:
             continue
         write_text(os.path.join(stage, relative.replace("/", os.sep)), text)
@@ -3344,7 +3984,7 @@ def cmd_install(root, policy, args):
                                  % MANIFEST_REL)
     written, replaced, kept = [], [], []
     for relative in install_files(source):
-        text = read_text(os.path.join(source, relative.replace("/", os.sep)))
+        text = shipping_text(source, relative)
         if text is None:
             continue
         destination = os.path.join(target, relative.replace("/", os.sep))
@@ -3447,6 +4087,7 @@ COMMAND_HANDLERS = {
     "package": cmd_package,
     "protect": lambda root, policy, args: update_list(root, policy, args, True),
     "unprotect": lambda root, policy, args: update_list(root, policy, args, False),
+    "reset": cmd_reset,
 }
 
 

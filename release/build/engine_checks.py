@@ -13,6 +13,7 @@ They import their helpers from the shipped suite rather than growing a second co
 """
 
 import json
+import importlib.util
 import os
 import re
 import shutil
@@ -26,7 +27,7 @@ TESTS = os.path.join(REPO, ".github", "ocf", "tests")
 sys.path.insert(0, TESTS)
 
 from run import (ENTRY, POLICY, build_root, install_into, iter_markdown_files,  # noqa: E402
-                 load_ocf_module, run_cli)
+                 load_ocf_module, run_cli, set_section_enabled)
 
 # Both moved here with the checks that use them; they have no other reader.
 #
@@ -406,7 +407,7 @@ def check_soft_rules_never_gate():
                    "tool_input": {"command": "python .github/ocf/ocf.py status"}}
         context = ocf.Context(root, policy, payload)
         probe = {"id": "probe-soft", "kind": "soft", "enabled": True,
-                 "message": "deny", "if": {"occasion": "act"}}
+                 "message": "deny", "if": {"occasion": "on-plan"}}
         for rule in list(soft) + [probe]:
             verdict = ocf.evaluate_rule(context, rule)
             assert verdict is None, (
@@ -459,7 +460,18 @@ def check_prompt_log():
     try:
         os.makedirs(os.path.join(root, ".github", "ocf"))
         os.makedirs(os.path.join(root, ".orchestrator"))
-        shutil.copyfile(POLICY, os.path.join(root, ".github", "ocf", "policy.toml"))
+        # Copied, then installed. This drives the real entry point, so the copy has to have the event
+        # installed and the master switch on - otherwise the hook answers nothing and the check reports
+        # on whatever the live switches happen to be. It did exactly that: with `[hooks] enabled` set to
+        # false in the working policy, this check failed with "a UserPromptSubmit wrote no prompt-log",
+        # which was true of the switch and false of the log.
+        with open(POLICY, "r", encoding="utf-8") as handle:
+            installed = handle.read()
+        installed = set_section_enabled(set_section_enabled(installed, "hooks", "true"),
+                                        "system", "true")
+        with open(os.path.join(root, ".github", "ocf", "policy.toml"), "w", encoding="utf-8",
+                  newline="\n") as handle:
+            handle.write(installed)
         with open(os.path.join(root, ".orchestrator", "state"), "w", encoding="utf-8") as handle:
             handle.write("asking\n")
         env = dict(os.environ)
@@ -597,7 +609,7 @@ def check_human_cli():
             problems.append("the plan approval recorded no approved_by: %r"
                             % read(".orchestrator/facts"))
         log = read(".orchestrator/journal.log")
-        for expected in ("protect src/notes.md", "unprotect src/notes.md", "approved:"):
+        for expected in ("protect src/notes.md", "unprotect src/notes.md", "approved by human:"):
             if expected not in log:
                 problems.append("the journal has no line for %r" % expected)
     finally:
@@ -635,6 +647,16 @@ def check_install_deploys():
         if code != 0:
             problems.append("the freshly installed target does not pass its own verify: %s"
                             % (out_text or err_text).strip()[-300:])
+        # A deployed gate with the maintenance window open is the failure this project exists to
+        # remove: the wiring is there, `verify` passes, the canaries still deny, and every rule that
+        # follows the switch is suspended. 0.2.0 shipped exactly that, so it is read rather than
+        # assumed - `verify` cannot see it.
+        with open(os.path.join(target, ".github", "ocf", "policy.toml"), "r", encoding="utf-8") as handle:
+            installed = handle.read().partition("[system]")[2].split("[", 1)[0]
+        if "enabled = true" not in installed:
+            problems.append("install deployed a policy whose maintenance window is open (%r), so the "
+                            "installed gate suspends every rule that follows the switch"
+                            % " ".join(installed.split())[:80])
     finally:
         shutil.rmtree(target, ignore_errors=True)
     assert not problems, "; ".join(problems)
@@ -673,6 +695,19 @@ def check_package_builds_a_release():
         with open(os.path.join(REPO, "VERSION"), "r", encoding="utf-8") as handle:
             version = handle.read().strip()
         stage = os.path.join(out_dir, "ocf-gate-%s" % version)
+        # The one file the release does not ship as written: a gate deployed with the maintenance
+        # window open is a gate that decides nothing while looking installed, and 0.2.0 shipped that
+        # way. Read here rather than trusted, because this is the artifact people install.
+        with open(os.path.join(stage, ".github", "ocf", "policy.toml"), "r", encoding="utf-8") as handle:
+            shipped = handle.read()
+        if "[system]" not in shipped:
+            problems.append("the shipped policy has no [system] section, so the window cannot be read")
+        else:
+            window = shipped.partition("[system]")[2].split("[", 1)[0]
+            if "enabled = true" not in window:
+                problems.append("the release ships a policy whose maintenance window is open (%r), so "
+                                "the deployed gate suspends every rule that follows the switch"
+                                % " ".join(window.split())[:80])
         for relative in (".github/ocf/ocf.py", ".github/ocf/tests/run.py",
                          ".github/hooks/orchestrator.json", ".github/protected.txt",
                          "INSTALL.txt", "VERSION"):
@@ -715,13 +750,18 @@ INTAKE_FACT_KEYS = ("grill_rounds", "consensus", "grill_used")
 
 def run_hook_submit(root, prompt):
     """Drive the real hook with a UserPromptSubmit payload. Returns its exit code."""
+    return run_hook_capture(root, prompt)[0]
+
+
+def run_hook_capture(root, prompt):
+    """Drive the real hook with a UserPromptSubmit payload. Returns (exit code, stdout)."""
     env = dict(os.environ)
     env["OCF_ROOT"] = root
     env["PYTHONIOENCODING"] = "utf-8"
     payload = {"hook_event_name": "UserPromptSubmit", "prompt": prompt, "session_id": "abcdef01"}
     proc = subprocess.run([sys.executable, ENTRY, "hook"], input=json.dumps(payload).encode("utf-8"),
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
-    return proc.returncode
+    return proc.returncode, proc.stdout.decode("utf-8", "replace")
 
 
 def check_intake_closes_on_leaving_asking():
@@ -767,8 +807,14 @@ def check_intake_closes_on_leaving_asking():
                 if code != 0:
                     problems.append("%s: `%s` exited %d: %s"
                                     % (label, " ".join(command), code, (err or out).strip()[-160:]))
-            with open(os.path.join(root, ".orchestrator", "facts"), "r", encoding="utf-8") as handle:
-                facts_text = handle.read()
+            # Absence is read as empty rather than crashing: the sweep that ends a round removes the
+            # facts file outright, which is a stronger statement than "no intake key is left inside
+            # it", and a check that raises on a correct outcome is worse than no check at all.
+            facts_path = os.path.join(root, ".orchestrator", "facts")
+            facts_text = ""
+            if os.path.exists(facts_path):
+                with open(facts_path, "r", encoding="utf-8") as handle:
+                    facts_text = handle.read()
             left = [key for key in INTAKE_FACT_KEYS if key + "=" in facts_text]
             transcript = os.path.exists(os.path.join(root, ".orchestrator", "prompt-log"))
             if survives and not left:
@@ -806,9 +852,516 @@ def check_intake_closes_on_leaving_asking():
     assert not problems, "; ".join(problems)
 
 
+def seed_round_files(root, files):
+    """Put a round's artifacts in place, so "did the boundary take them away" is a real question.
+
+    Without this the assertion is "absent stays absent", which is true of every implementation
+    including one with the sweep deleted - the same mistake the intake check above had to seed its
+    way out of.
+    """
+    for name, text in files.items():
+        with open(os.path.join(root, ".orchestrator", name), "w",
+                  encoding="utf-8", newline="\n") as handle:
+            handle.write(text)
+
+
+def facts_values(root):
+    path = os.path.join(root, ".orchestrator", "facts")
+    values = {}
+    if not os.path.exists(path):
+        return values
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle.read().splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+    return values
+
+
+def facts_keys(root):
+    return sorted(facts_values(root))
+
+
+def run_hook_payload(root, payload):
+    """Drive the real hook with one exact payload. Returns (exit code, stdout)."""
+    env = dict(os.environ)
+    env["OCF_ROOT"] = root
+    env["PYTHONIOENCODING"] = "utf-8"
+    proc = subprocess.run([sys.executable, ENTRY, "hook"], input=json.dumps(payload).encode("utf-8"),
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=root)
+    return proc.returncode, proc.stdout.decode("utf-8", "replace")
+
+
+def check_p0_comes_from_the_report():
+    """`p0_count` comes off a subagent's report, and does not survive one that carries no count.
+
+    `zero-p0` is the gate that lets work start, so this fact is an authorization. It has no writer on
+    the command line - `p0-is-an-audit-result` refuses that, and the shipped suite pins the refusal -
+    which leaves the hook reading the auditor's own report, the one artifact in the round that the
+    agent asking for the audit did not write.
+
+    The clearing half is the one that is easy to leave out and impossible to notice from the outside:
+    a zero left standing from an earlier audit is exactly the value the gate accepts, so a report
+    with no count has to remove the number rather than leave it where it was.
+    """
+    problems = []
+    for report, expected, label in (("## P0 (0)\n\nthe plan is clean\n", "0", "a clean report"),
+                                    ("## P0 (3)\n\n- a real defect\n", "3", "a report with defects")):
+        root = build_root({"state": "planning", "facts": {"p0_count": "9"}})
+        try:
+            payload = {"hook_event_name": "PostToolUse", "tool_name": "runSubagent",
+                       "tool_input": {"agentName": "Plan Auditor", "description": "audit it"},
+                       "tool_response": report}
+            code, _ = run_hook_payload(root, payload)
+            if code != 0:
+                problems.append("%s: the hook exited %d" % (label, code))
+            got = facts_values(root).get("p0_count")
+            if got != expected:
+                problems.append("%s: p0_count is %r rather than %r, so the gate is reading something "
+                                "other than the report" % (label, got, expected))
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    root = build_root({"state": "planning", "facts": {"p0_count": "0"}})
+    try:
+        payload = {"hook_event_name": "PostToolUse", "tool_name": "runSubagent",
+                   "tool_input": {"agentName": "Criterion Picker"},
+                   "tool_response": "I picked a way to reproduce it.\n"}
+        code, _ = run_hook_payload(root, payload)
+        if code != 0:
+            problems.append("a report with no count: the hook exited %d" % code)
+        if "p0_count" in facts_values(root):
+            problems.append("a report carrying no P0 heading left the previous audit's count "
+                            "standing, so `zero-p0` can pass on an audit that is not this one")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    assert not problems, "; ".join(problems)
+
+
+# What a round leaves on disk besides the facts: the plan it was approved to do, the intake that
+# produced it, and the two files that have to survive the boundary.
+ROUND_ARTIFACTS = {"plan.md": "# Plan\n\n## Steps\n\n1. do it\n\n## Files\n\n`a.py`\n",
+                   "prompt-log": "seeded | 00000000 | asking | a human reply\n",
+                   "exec.log": "1\tpython x\n",
+                   "glossary.md": "term: meaning\n"}
+ROUND_SURVIVES = {"exec.log": "1\tpython x\n", "glossary.md": "term: meaning\n"}
+
+
+def check_round_state_cleared():
+    """Entering `ready` ends the round: the facts, the plan and the transcript go, the record stays.
+
+    `zero-p0` is a gate and `p0_count` is the number behind it, so the point of the sweep is that the
+    number cannot outlive the round it was given in. A verdict that survives is a verdict the next
+    round can be satisfied by without ever being audited - which is the whole failure the gate exists
+    to prevent, and it would be invisible: the suite would keep passing while the gate quietly stopped
+    asking for an audit.
+
+    Every route into `ready` is walked, not the `reporting -> ready` edge alone. The machine can
+    always get back to `ready` by way of `blocked`, so a sweep that watched only the direct edge would
+    leave the round standing on the interrupted path.
+
+    The counter-case is what keeps this able to fail in the other direction: `blocked` interrupts the
+    round rather than ending it, so entering it must clear nothing at all. A sweep that ran on every
+    `advance` would pass every case above and fail this one.
+    """
+    base = {"goal": "ship the fix", "tools": "python", "references": "the README",
+            "deliverables": "a passing suite", "code_style": "short lines",
+            "docs_decision": "skip", "stack_env": "python 3.12", "p0_count": "0",
+            "grill_rounds": "3", "consensus": "we agreed on the goal", "grill_used": "me"}
+    ends = (
+        ("asking -> ready", "asking", (("advance", "ready", "the question was answered"),)),
+        ("blocked -> ready", "blocked", (("advance", "ready", "resuming after the interruption"),)),
+        ("reporting -> blocked -> ready", "reporting",
+         (("advance", "blocked", "stuck"), ("advance", "ready", "resuming after the interruption"))),
+    )
+    problems = []
+    for label, start, commands in ends:
+        root = build_root({"state": start, "facts": dict(base)})
+        try:
+            seed_round_files(root, ROUND_ARTIFACTS)
+            for command in commands:
+                code, out, err = run_cli(root, *command)
+                if code != 0:
+                    problems.append("%s: `%s` exited %d: %s"
+                                    % (label, " ".join(command), code, (err or out).strip()[-160:]))
+            left = facts_keys(root)
+            if left:
+                problems.append("%s: %s survived the round, so the previous audit is still standing "
+                                "and `zero-p0` can be satisfied without a new one"
+                                % (label, ", ".join(sorted(left))))
+            for name in ("plan.md", "prompt-log"):
+                if os.path.exists(os.path.join(root, ".orchestrator", name)):
+                    problems.append("%s: %s belongs to the round that ended and is still there"
+                                    % (label, name))
+            for name, text in ROUND_SURVIVES.items():
+                path = os.path.join(root, ".orchestrator", name)
+                if not os.path.exists(path):
+                    problems.append("%s: %s is part of the record and the sweep removed it"
+                                    % (label, name))
+                    continue
+                with open(path, "r", encoding="utf-8") as handle:
+                    if handle.read() != text:
+                        problems.append("%s: %s was rewritten, and the record is not the sweep's to "
+                                        "change" % (label, name))
+            if not os.path.exists(os.path.join(root, ".orchestrator", "state")):
+                problems.append("%s: the sweep removed the state file it was moving" % label)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    root = build_root({"state": "reporting", "facts": dict(base)})
+    try:
+        seed_round_files(root, ROUND_ARTIFACTS)
+        code, out, err = run_cli(root, "advance", "blocked", "stuck")
+        if code != 0:
+            problems.append("`advance blocked` exited %d: %s" % (code, (err or out).strip()[-160:]))
+        if "p0_count" not in facts_keys(root):
+            problems.append("`blocked` cleared the round's facts, but the bypass interrupts a round "
+                            "instead of ending it")
+        for name in ("plan.md", "prompt-log"):
+            if not os.path.exists(os.path.join(root, ".orchestrator", name)):
+                problems.append("`blocked` removed %s, but the round is still running" % name)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+    assert not problems, "; ".join(problems)
+
+
+# The moments that no state delivers, because they are not about a state: `session-start` is about the
+# conversation beginning and arrives on the session hook, and `on-mistake` is about a command that
+# failed and arrives on the post-tool hook, whenever that happens rather than in one state.
+OUTSIDE_STATE_MOMENTS = ("session-start", "on-mistake")
+
+
+def check_state_moments():
+    """A soft rule must reach the model in the states its occasion names, and in no others.
+
+    Handing over every soft rule on every turn was the thing this replaced, and the way to get it
+    wrong is quiet in both directions: a rule whose occasion is in no state's row stops arriving
+    without a word, and a table that is built but never consulted looks identical to one that works -
+    the contract the model receives is the only place the difference shows, and nobody reads that
+    every turn.
+
+    So both halves are here: the table covers the states and speaks the engine's own vocabulary, and
+    the hook actually filters by it. The vocabulary half is written out rather than read from
+    `SOFT_OCCASIONS`, because a check that reads its expectation out of the thing it checks stays
+    green when that thing is emptied.
+    """
+    ocf = load_ocf_module()
+    moments = ocf.STATE_MOMENTS
+    problems = []
+    for state in ocf.STATES:
+        if state not in moments:
+            problems.append("%s has no row, so a soft rule written for its moment never arrives" % state)
+    for moment in ("session-start", "ask", "plan", "act", "answer", "on-mistake"):
+        if moment not in ocf.SOFT_OCCASIONS:
+            problems.append("the engine no longer knows the moment %r, so this check is out of date "
+                            "with it" % moment)
+    for state, listed in moments.items():
+        unknown = [moment for moment in listed if moment not in ocf.SOFT_OCCASIONS]
+        if unknown:
+            problems.append("%s names %s, which is not a moment the engine knows"
+                            % (state, ", ".join(unknown)))
+    for moment in ocf.SOFT_OCCASIONS:
+        if moment in OUTSIDE_STATE_MOMENTS:
+            continue
+        if not any(moment in listed for listed in moments.values()):
+            problems.append("no state carries %r, so a rule written for it is dead on arrival"
+                            % moment)
+
+    probes = """
+[[rule]]
+id = "probe-plan-moment"
+kind = "soft"
+label = "probe-plan-moment"
+enabled = true
+message = "PROBE-PLAN-SENTENCE"
+
+[rule.if]
+occasion = "plan"
+
+[[rule]]
+id = "probe-ask-moment"
+kind = "soft"
+label = "probe-ask-moment"
+enabled = true
+message = "PROBE-ASK-SENTENCE"
+
+[rule.if]
+occasion = "ask"
+"""
+    for state, arrives, withheld in (("planning", "PROBE-PLAN-SENTENCE", "PROBE-ASK-SENTENCE"),
+                                     ("asking", "PROBE-ASK-SENTENCE", "PROBE-PLAN-SENTENCE")):
+        root = build_root({"state": state})
+        try:
+            with open(os.path.join(root, ".github", "ocf", "policy.toml"), "a",
+                      encoding="utf-8") as handle:
+                handle.write(probes)
+            code, emitted = run_hook_capture(root, "carry on")
+            if code != 0:
+                problems.append("the hook exited %d on a UserPromptSubmit in %s" % (code, state))
+            if arrives not in emitted:
+                problems.append("in %s the contract does not carry the rule for that state's moment, "
+                                "so the table is not being consulted: got %r"
+                                % (state, emitted[-300:]))
+            if withheld in emitted:
+                problems.append("in %s the contract carries a rule whose moment is not in view, so "
+                                "the model is reading guidance for a moment that is not happening"
+                                % state)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    assert not problems, "; ".join(problems)
+
+
+def load_score_module():
+    path = os.path.join(REPO, ".github", "skills", "quality-self-evaluation", "scripts", "score.py")
+    spec = importlib.util.spec_from_file_location("ocf_quality_score", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("the quality scorer cannot be loaded from its skill directory")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_quality_scoring():
+    """The evaluator covers every current rule and keeps confidence separate from quality means.
+
+    The arithmetic can look right while the compliance conclusion is dangerously wrong, so the
+    fixtures below combine multiple deliverables, a missing hard-rule observation, and a confirmed
+    hard violation. They also pin the true-N/A case separately from missing evidence.
+    """
+    scorer = load_score_module()
+    ocf = load_ocf_module()
+    live_ocf, live_policy, live_rules = scorer.load_rules(REPO)
+    assert set(live_rules) == {rule.get("id") for rule in live_policy.get("rule", [])}, (
+        "the evaluator's source of rule IDs differs from the policy the gate reads")
+    policy = {"system": {"enabled": True}}
+    rules = {
+        "soft-answer": {"id": "soft-answer", "kind": "soft", "enabled": True,
+                        "if": {"occasion": "answer"}},
+        "soft-plan": {"id": "soft-plan", "kind": "soft", "enabled": True,
+                       "if": {"occasion": "plan"}},
+        "hard-write": {"id": "hard-write", "enabled": True,
+                       "if": {"class": "write"}},
+        "hard-exec": {"id": "hard-exec", "enabled": True,
+                      "if": {"class": "exec"}},
+        "disabled-soft": {"id": "disabled-soft", "kind": "soft", "enabled": False,
+                          "if": {"occasion": "answer"}},
+    }
+
+    def record(rule_id, status, value=None):
+        if status == "score":
+            return {"rule_id": rule_id, "status": status, "score": value,
+                    "evidence": "fixture evidence"}
+        return {"rule_id": rule_id, "status": status, "reason": "fixture reason"}
+
+    def artifact(identifier, kind, occasions, items):
+        return {"id": identifier, "kind": kind, "occasions": occasions, "rules": items}
+
+    answer_items = [record("soft-answer", "score", 4),
+                    record("soft-plan", "not_applicable"),
+                    record("hard-write", "not_applicable"),
+                    record("hard-exec", "not_applicable"),
+                    record("disabled-soft", "not_applicable")]
+    first_doc = [record("soft-answer", "not_applicable"),
+                 record("soft-plan", "score", 2),
+                 record("hard-write", "unverified"),
+                 record("hard-exec", "not_applicable"),
+                 record("disabled-soft", "not_applicable")]
+    second_doc = [record("soft-answer", "not_applicable"),
+                  record("soft-plan", "score", 3),
+                  record("hard-write", "score", 1),
+                  record("hard-exec", "not_applicable"),
+                  record("disabled-soft", "not_applicable")]
+    data = {"artifacts": [artifact("answer", "answer", ["answer"], answer_items),
+                          artifact("doc-a", "deliverable", ["plan"], first_doc),
+                          artifact("doc-b", "deliverable", ["plan"], second_doc)]}
+    result = scorer.evaluate(data, ocf, policy, rules)
+    assert result["answer_mean"] == "4.0", result
+    assert result["deliverables_mean"] == "2.0", result
+    assert result["overall"] == "3.0", result
+    assert result["quality_status"] == "PARTIAL", result
+    assert result["hard_compliance"] == "FAIL", result
+    assert result["artifacts"][0]["hard_compliance"] == "NOT_APPLICABLE", result
+    assert result["artifacts"][1]["hard_compliance"] == "UNVERIFIED", result
+
+    verified = json.loads(json.dumps(data))
+    verified["artifacts"][1]["rules"][2] = record("hard-write", "score", 4)
+    verified["artifacts"][2]["rules"][2] = record("hard-write", "score", 5)
+    verified_result = scorer.evaluate(verified, ocf, policy, rules)
+    assert verified_result["quality_status"] == "COMPLETE", verified_result
+    assert verified_result["hard_compliance"] == "PASS", verified_result
+
+    unresolved = json.loads(json.dumps(data))
+    unresolved["artifacts"][1]["rules"][2] = record("hard-write", "score", 3)
+    unresolved_result = scorer.evaluate(unresolved, ocf, policy, rules)
+    assert unresolved_result["artifacts"][1]["hard_compliance"] == "UNVERIFIED", unresolved_result
+    assert unresolved_result["hard_compliance"] == "FAIL", unresolved_result
+
+    inactive_rules = {rule_id: dict(rule, enabled=False) for rule_id, rule in rules.items()}
+    all_na = {"artifacts": [artifact("answer", "answer", ["answer"],
+                                      [record(rule_id, "not_applicable")
+                                       for rule_id in inactive_rules]) ]}
+    unrated = scorer.evaluate(all_na, ocf, policy, inactive_rules)
+    assert unrated["overall"] is None and unrated["quality_status"] == "UNRATED", unrated
+    assert unrated["hard_compliance"] == "NOT_APPLICABLE", unrated
+    assert scorer.display_number(__import__("decimal").Decimal("3.25")) == "3.3"
+
+    def rejected(label, candidate, candidate_rules=rules):
+        try:
+            scorer.evaluate(candidate, ocf, policy, candidate_rules)
+        except scorer.InputError:
+            return
+        raise AssertionError("the evaluator accepted %s" % label)
+
+    bad = json.loads(json.dumps(all_na))
+    bad["artifacts"][0]["rules"].pop()
+    rejected("an artifact that omitted a live policy rule", bad, inactive_rules)
+
+    bad = json.loads(json.dumps(all_na))
+    bad["artifacts"][0]["rules"][0]["reason"] = "   "
+    rejected("an empty N/A reason", bad, inactive_rules)
+
+    bad = json.loads(json.dumps(all_na))
+    bad["artifacts"][0]["rules"].append(dict(bad["artifacts"][0]["rules"][0]))
+    rejected("a duplicate rule id", bad, inactive_rules)
+
+    bad = json.loads(json.dumps(all_na))
+    bad["artifacts"][0]["rules"][0]["rule_id"] = "not-a-policy-rule"
+    rejected("an unknown rule id", bad, inactive_rules)
+
+    bad = json.loads(json.dumps(data))
+    bad["artifacts"][0]["rules"][0]["score"] = 6
+    rejected("a score outside 1..5", bad)
+
+    bad = json.loads(json.dumps(data))
+    bad["artifacts"][0]["rules"][0]["evidence"] = ""
+    rejected("a numeric score with empty evidence", bad)
+
+    bad = json.loads(json.dumps(data))
+    bad["artifacts"][0]["rules"][0] = record("soft-answer", "not_applicable")
+    rejected("N/A for an active soft rule", bad)
+
+    bad = json.loads(json.dumps(all_na))
+    bad["artifacts"][0]["rules"][-1] = record("disabled-soft", "score", 5)
+    rejected("a score for a disabled rule", bad, inactive_rules)
+
+
+def check_session_start_briefing():
+    """SessionStart must inject actual component results and the current workflow controls.
+
+    The startup hook is the data source for a user's first report. If it omits the state or prints a
+    hardcoded command list, the soft rule cannot reliably tell the human what is happening.
+    """
+    problems = []
+    for state, armed, maintenance_status in (("ready", False, "WARN"),
+                                            ("planning", False, "WARN"),
+                                            ("reporting", True, "PASS")):
+        root = build_root({"state": state, "enabled": armed})
+        try:
+            payload = {"hook_event_name": "SessionStart", "session_id": "briefing-test"}
+            code, output = run_hook_payload(root, payload)
+            if code != 0:
+                problems.append("SessionStart exited %d in %s" % (code, state))
+                continue
+            lines = [line for line in output.splitlines() if line.startswith("{")]
+            if not lines:
+                problems.append("SessionStart emitted no JSON in %s" % state)
+                continue
+            emitted = json.loads(lines[-1])
+            context = (emitted.get("hookSpecificOutput") or {}).get("additionalContext", "")
+            # Matched against the de-wrapped text: these are multi-word phrases quoted out of a rule
+            # whose wording is wrapped by hand, so asserting them against the raw string made an
+            # unrelated reflow fail the build - the copy being load-bearing in the one place it should
+            # not be. The absence checks below stay on the raw text, because they are about lines.
+            flat = " ".join(context.split())
+            for expected in ("OCF startup summary:",
+                             "Maintenance: %s" % maintenance_status,
+                             "report the system at session start",
+                             "Goal / Requirements / Deliverables",
+                             "report a bug with symptom", "expected result, actual",
+                             "result, and reproduction steps"):
+                if expected not in flat:
+                    problems.append("SessionStart in %s omitted %r: %r"
+                                    % (state, expected, context[-500:]))
+            # The state, the flow line and the command groups belong to the standing contract, which
+            # arrives on every turn. Restating them here is what made the per-turn `OCF state:` marker
+            # ambiguous - and that marker is the only test that proves the hook is alive at all, so a
+            # second spelling of the same fact has to fail rather than pass unnoticed.
+            for absent in ("\n  State: ", "\n  Flow: ", "\n  agent: ", "\n  human: "):
+                if absent in context:
+                    problems.append("SessionStart in %s restated %r, which the standing contract "
+                                    "already carries on every turn" % (state, absent.strip()))
+            if "Hook wiring: FAIL" not in context:
+                problems.append("the missing hook wiring was not reported as a failed component")
+            if "State store: PASS" not in context:
+                problems.append("the writable state store was not reported as a passing component")
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    assert not problems, "; ".join(problems)
+
+
+def check_policy_comment_migration():
+    """The explanations removed from policy must remain actionable in the language guides.
+
+    Checked in both directions. Forwards: every explanation the file used to carry above a key is still
+    reachable, named by an identifier that appears verbatim in both guides - which is why the terms below
+    are code literals and not prose, since one guide is Chinese and a phrase would only pin one of them.
+    Backwards: the policy carries no comment at all. Not above a key, not as a header, and not the
+    generated vocabulary, which moved into the English guide along with the explanations. The header used
+    to be pinned as a line count, which left "a file that quietly grew its comments back" as something
+    only a reviewer could see; "no line in this file is a comment" is the same rule with nothing to count.
+    """
+    guides = (os.path.join(REPO, ".github", "ocf", "POLICY-GUIDE.md"),
+              os.path.join(REPO, "POLICY-GUIDE_CH.md"))
+    required = (
+        ("P0 fact source", "p0-is-an-audit-result"),
+        ("unread write target", "unread-write-target"),
+        ("protected-path coverage", "touches-protected"),
+        ("approval condition", "approval = true"),
+        ("control-plane exception", "control_plane"),
+        ("soft-rule delivery", "occasion"),
+        ("tool class semantics", "view_image"),
+        ("payload field path", "task.command"),
+        ("env gating", "undeclared-env-command"),
+        ("approval sentence demand", "min_reason_len"),
+        ("allowed acting states", "allowed_states"),
+        ("event table", "HOOK_EVENTS"),
+        ("wiring file", "orchestrator.json"),
+    )
+    ocf = load_ocf_module()
+    problems = []
+    for path in guides:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+        for label, term in required:
+            if term not in text:
+                problems.append("%s has no migrated explanation for %s (%s)"
+                                % (os.path.relpath(path, REPO), label, term))
+
+    # The guide owns the whole generated vocabulary now, so the markers reload rewrites through have to
+    # be in it - and it is installed, which the root of this repository is not.
+    with open(guides[0], "r", encoding="utf-8") as handle:
+        guide = handle.read()
+    for marker in (ocf.VOCAB_BEGIN, ocf.VOCAB_END):
+        if marker not in guide:
+            problems.append("%s has lost %s, so reload can neither find nor rewrite the vocabulary "
+                            "region" % (os.path.relpath(guides[0], REPO), marker))
+
+    policy = os.path.join(REPO, ".github", "ocf", "policy.toml")
+    with open(policy, "r", encoding="utf-8") as handle:
+        lines = handle.read().splitlines()
+    for index, line in enumerate(lines, 1):
+        if line.lstrip().startswith("#"):
+            problems.append("policy.toml line %d is a comment (%r); the file is data, and every "
+                            "explanation belongs in a guide" % (index, line.strip()[:60]))
+    assert not problems, "; ".join(problems)
+
+
 CHECKS = (
-    ("transition-table", check_transition_table),
-    ("gated-transitions", check_gated_transitions),
+    ("transition-table", check_transition_table),    ("gated-transitions", check_gated_transitions),
     ("gate-in-front", check_gate_reports_what_is_in_front),
     ("github-folder-ascii", check_github_folder_is_ascii),
     ("section-references", check_section_references),
@@ -823,6 +1376,12 @@ CHECKS = (
     ("package-builds-a-release", check_package_builds_a_release),
     ("prompt-log", check_prompt_log),
     ("intake-closes", check_intake_closes_on_leaving_asking),
+    ("round-cleared", check_round_state_cleared),
+    ("state-moments", check_state_moments),
+    ("p0-from-the-report", check_p0_comes_from_the_report),
+    ("quality-scoring", check_quality_scoring),
+    ("session-start-briefing", check_session_start_briefing),
+    ("policy-comment-migration", check_policy_comment_migration),
 )
 
 

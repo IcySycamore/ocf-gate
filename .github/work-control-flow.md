@@ -8,6 +8,9 @@ recognition: the human approves by running a command in their own terminal.
 - `.github/ocf/ocf.py` is the only implementation: the state machine, the gates and the hook entry
   point.
 - `.github/ocf/policy.toml` is the only configuration: every rule, threshold and tool classification.
+- `.github/skills/` contains the project's on-demand Agent Skills. Their directory and frontmatter
+  names match; VS Code lists them as slash commands. The workflow skills require Work Orchestrator,
+  which the skill itself cannot select.
 - `.github/hooks/orchestrator.json` wires SessionStart, UserPromptSubmit, PreToolUse and PostToolUse to `ocf.py hook`.
 - `.github/ocf/tests/` holds the offline case table. Each case runs through the real entry point, so a gate that quietly stopped denying fails a test instead of looking healthy. The structural checks are
   the tuple `CHECKS` at the bottom of `run.py` - read it for the list rather than a copy of it here,
@@ -17,20 +20,21 @@ recognition: the human approves by running a command in their own terminal.
   Checks on the engine itself exist too, but they live beside the build and are not shipped; the build
   runs both before it packages anything. Between them they cover what fails silently otherwise: markdown
   links that no longer resolve, agent names no prompt defines, section numbers a renumbering left
-  pointing at the wrong section, frontmatter that does not parse, templates that do not satisfy the
-  schema they exist to satisfy, a policy using a key the engine does not read, and every generated
+  pointing at the wrong section, agent/skill frontmatter that does not parse, templates that do not
+  satisfy the schema they exist to satisfy, a policy using a key the engine does not read, and every generated
   region on disk matching what the code renders.
 - `.github/assets/` holds the plan and report templates. `.github/copilot-instructions.md` is the model's
   standing contract and is generated; `.github/protected.txt` is the one protected list.
 - `.orchestrator/` holds the runtime: `state` and `facts` (the hook writes both), `journal.log` and
-  `exec.log` (the hook appends), `prompt-log` (the hook records prompts while the intake is open; the
-  transcript, and the three facts the intake is judged by, are cleared when the machine leaves
-  `asking` - entering `asking` opens a fresh intake, and `blocked` is an interruption rather than an
-  end), `plan.md` (written only
-  when the human asks for a plan file), and `glossary.md` (written by the model, because the contract's
-  soft rules tell it to). Leave the first four alone - they are the gate's own record. The protected
-  list is NOT here: it is `.github/protected.txt`, because a list that is not versioned is absent on a
-  fresh clone, and every rule still reads as if it were there.
+  `exec.log` (the hook appends), `prompt-log` (the hook records prompts while the intake is open),
+  `plan.md` (written only when the human asks for a plan file), and `glossary.md` (written by the
+  model, because the contract's soft rules tell it to). Two sweeps run over it. Entering `ready` ends
+  the round and removes everything but `journal.log`, `exec.log`, `glossary.md` and `state`. `reset`,
+  which only the human runs, removes everything but `glossary.md` and puts the state back to `ready`,
+  leaving no journal line - the journal is one of the things it removes. Leave the first four alone -
+  they are the gate's own record. The protected list is NOT here: it is `.github/protected.txt`,
+  because a list that is not versioned is absent on a fresh clone, and every rule still reads as if it
+  were there.
 
 ## 2. Commands
 
@@ -51,7 +55,7 @@ everything beneath it, and every entry is reported back with the number of files
 an entry that covers nothing is a request that was not granted. There is no second list and no
 exemption file.
 `reload` re-reads the configuration and regenerates the four things built from it: the model's standing
-contract, the vocabulary region of `policy.toml`, the reference region of this document, and the hook
+contract, the vocabulary section of `POLICY-GUIDE.md`, the reference region of this document, and the hook
 wiring. It is human-only, for the reason given in section 9 (limits and switches).
 `install <target-dir>` copies this whole gate into another directory and is human-only for the same
 reason: it writes files where no rule can see the write, so nothing would stop `ocf.py install .` from
@@ -76,6 +80,14 @@ executing is answered without running `advance ready` - pulling the machine back
 progress would discard it with no human act. Entering `asking` opens an intake and leaving it closes
 one: `blocked` is the exception both ways, an interruption rather than an end. executing to reporting,
 and reporting to ready, are the agent.
+
+Entering `ready` ends a ROUND, and the machine clears it on the way in: every fact, the plan file, the
+intake transcript. The journal, `exec.log`, the glossary and the state itself are kept - they are the
+record of what happened, and a round boundary is not a place to lose the rounds before it. This runs on
+every route into `ready`, not on the reporting-to-ready step alone, so a round that was interrupted
+through `blocked` is cleared when it comes back rather than leaving its evidence standing. The reason it
+matters is `p0_count`: it is the number behind the `zero-p0` gate, and a verdict that outlives its round
+is an approval the next round never earned.
 
 Two things that surprise people, both of them true and both of them once written the other way round:
 
@@ -108,17 +120,20 @@ where a gate belonged, and claimed plan-schema wants eight sections when it read
 disagrees with your expectation, this section is right.
 
 <!-- OCF:REFERENCE:BEGIN -->
+
 ### Gates
 
 A gate is a precondition of a state change, not a rule about tool calls. Failing one refuses the transition and names what is missing.
 
 Entering `executing`
+
 - `plan-schema` - a plan file, if one exists, carries `## Steps` and `## Files`, both non-empty. An absent file passes: the plan is a conversation artefact by default
 - `zero-p0` - p0_count is 0
 - `protected-list-clear` - the plan's `## Files` section names no path on the protected list
 - `stack-env` - stack_env is declared, which means the human said what the environment is rather than the machine probing for it
 
 Entering `planning`
+
 - `context` - the five intake items are present and each at least 4 characters
 - `docs-decision` - docs_decision is create or skip
 - `grill-valid` - grill_rounds is at least 1, consensus at least 10 characters, grill_used is with-docs or me
@@ -138,11 +153,13 @@ Classes are consulted strictest first, so a tool listed in two of them is judged
 
 ### Rules
 
-In file order, first match wins. The conditions are named rather than quoted: the values live in `.github/ocf/policy.toml`, which is where they are meant to be read and changed. Every rule follows the master switch; the three spellings of a rule's own 
-`enabled` line, and which one is the default, are in that file's vocabulary region.
+In file order, first match wins. The conditions are named rather than quoted: the values live in `.github/ocf/policy.toml`, which is where they are meant to be read and changed. Every rule follows the master switch; the three spellings of a rule's own
+`enabled` line, and which one is the default, are in the vocabulary section of
+`.github/ocf/POLICY-GUIDE.md`.
 
 - `plan-file-writable` -> `allow` - The gate itself asks for this artifact. [class, path_matches]
 - `failure-budget` -> `deny` - Consecutive failures reached the budget. Stop and report the symptom, what you tried, and what you need from the human. Clears when the human replies. [class, fact, is]
+- `p0-is-an-audit-result` -> `deny` - P0 is not something anyone sets. Dispatch the audit, and the hook reads the count off its report. [class, command_matches]
 - `visual-tool` -> `deny` - The machine may never take screenshots or view images with a tool. Ask the human to attach one; attachments are readable, tools are not. [class]
 - `visual-command` -> `deny` - The machine may never run visual or screenshot tests. [class, command_matches]
 - `human-only-subcommand` -> `deny` - Authorization subcommands run only in the human's own terminal, even when the human asks. Point them at the rule or the config to change instead. [class, computed]
@@ -163,15 +180,17 @@ In file order, first match wins. The conditions are named rather than quoted: th
 - `approval-required-env` -> `require_approval` - This tool changes the environment and needs approval. [approval, class]
 - `repeated-command` -> `ask` - The same command again, which suggests you are stuck in a loop. The human decides whether to continue. [class, command_repeats_at_least]
 - `intake-grilling` (soft, occasion `ask`) - ask only what is missing
+- `session-start-briefing` (soft, occasion `session-start`) - report the system at session start
+- `quality-self-evaluation` (soft, occasion `answer`) - evaluate each answer and deliverable
 - `independent-audit` (soft, occasion `plan`) - independent audit
 - `no-screenshots` (soft, occasion `act`) - screenshots come from the human
-- `beginner-mode` (soft, occasion `ask, answer`) - beginner mode
+- `beginner-mode` (soft, occasion `answer`) - beginner mode
 - `human-only-commands` (soft, occasion `act`) - human-only commands
 - `write-for-the-reader` (soft, occasion `act, answer`) - write for the reader
 - `a-way-back` (soft, occasion `plan, act`) - a way back
 - `plan-write-file` (soft, occasion `plan`) - the plan is written to a file
 - `plan-template` (soft, occasion `plan`) - fill the plan template
-- `report-template` (soft, occasion `act`) - fill the report template
+- `report-template` (soft, occasion `answer`) - fill the report template
 - `grill-with-docs` (soft, occasion `plan`) - question against the documents
 - `question-is-not-a-task` (soft, occasion `ask`) - a question is not a task
 <!-- OCF:REFERENCE:END -->
@@ -225,7 +244,12 @@ that applies it. It is not repeated here: the copy that used to be here had drif
 the one the auditor actually reads.
 
     write the plan -> dispatch plan-auditor -> any P0? yes -> revise and re-audit
-                                              no  -> set p0_count 0
+                                              no  -> hand over the two reports
+
+Nobody types the count. `p0-is-an-audit-result` refuses `set p0_count` outright, whoever runs it, and
+the hook takes the number off the auditor's report instead - the `## P0 (N)` heading the auditor is
+already required to write. A report with no such heading clears the fact, and so does entering `ready`,
+so the gate can only ever be satisfied by an audit of the round it is guarding.
 
 Then give the human two reports in chat, unless they want a file: the action report, and the risk
 design report covering risks, triggers, mitigations, residual risk and rejected alternatives. Hand
@@ -246,7 +270,7 @@ because the output ownership of a multi-line paste is unreliable. To filter, lim
 discarding all output. For a real exit code use a separate child process, since a parent shell keeps a
 stale LASTEXITCODE.
 
-fail_budget consecutive failures - two, from `[limits] fail_budget` - sets must_consult and locks every
+Two consecutive failures - `budget = 2` on the `failure-budget` rule - set must_consult and lock every
 exec-class tool until the human replies. The counter has two sources: the model records a failure it saw
 with `ocf.py fail "<reason>"`, and the post-tool handler adds one when a command's exit code came back
 non-zero - skipping the commands whose exit code IS their answer (`grep`, `diff`, `Test-Path`). Reset with
@@ -303,7 +327,7 @@ contract the model reads on every turn, and the model applies it. Both are writt
 inside a hard rule's verdict, and injected into the contract while a soft rule is on).
 
 `python .github/ocf/ocf.py reload` is human-only, because it regenerates everything built from the
-configuration: the model's standing contract, the vocabulary region of `policy.toml`, the reference
+configuration: the model's standing contract, the vocabulary section of `POLICY-GUIDE.md`, the reference
 region of this document, and the hook wiring. An agent able to run it could edit the rules it is being
 asked to follow. It validates the whole policy first and changes nothing if the policy is broken, since
 half-applied configuration is worse than none.
@@ -313,8 +337,9 @@ it, so VS Code stops starting this program at all - uninstalling is not somethin
 event has its own switch as well, and the entry point reads them too, because the wiring file is only
 re-read when the window reloads. `pre_tool_use` is the gate; the other three only add context.
 
-`[limits]` holds one threshold, `fail_budget = 2`. Every other ceiling lives inside the rule that uses
-it (section 7, terminal discipline). Shared keys do remain elsewhere - `[approval] allowed_states` and
+Every ceiling lives inside the rule that uses it: `command_length_over = 400` and
+`command_statements_over = 3` (section 7, terminal discipline), and `budget = 2` on `failure-budget`.
+There is no shared threshold table left to drift from them. Shared keys do remain elsewhere - `[approval] allowed_states` and
 `min_reason_len`, `[unknown_tool] action`, the `[hooks]` switches, `[paths] state_dir` - and they are
 listed with what they mean in the generated region above. The file is read on every invocation, so a
 change to it applies immediately; only `.github/hooks/*.json` needs a window reload.
@@ -362,6 +387,63 @@ to pick Allow all in order to control approvals. So the working configuration is
 prompt is left to the approval settings you configure. Setting `chat.autoReply` alone is NOT enough
 while the level is still autopilot, because the triggering condition is an OR.
 
+Two orthogonal choices, often read as one. **Approvals** decide whether a tool call is questioned:
+`manual` asks, `assisted` puts a judge in front of it (an LLM reviews each call, and anything it does
+not approve is asked about), `allow all` never asks. **Mode** decides whether the work stops for the
+human: `interactive`, `plan` (a plan is delivered and the human clicks to execute it), `autopilot`. The
+injection is the mode axis leaking into the approvals mechanism. The per-session pair is
+`chat.defaultConfiguration` (`approvals`, `mode`); `chat.permissions.default` is the approvals axis
+alone, and its schema accepts only `default`, `autoApprove` and `autopilot` - **`assisted` is not one of
+them**, so writing it in a settings file is rejected while the picker still offers it. Approvals are not
+this gate: under `assisted` the judge does not know the state machine, which is one more reason anything
+that must hold goes behind `deny`.
+
+The harness decides whether a hook runs at all, and that is not the same question as whether the
+deployment is correct. Two harnesses load this project's wiring, and both are supported without any
+second wiring file: the local chat agent runs the hook in the editor extension, and the agent-host
+harness (`agent-host-copilotcli`, the BYOK sessions) runs it in its own runtime - the host enables
+`.github/hooks/` there outright, and its event-key map resolves the PascalCase names this file uses to
+the same events as its own camelCase ones. What differs is the _timing_. The editor reads hook files
+when the window starts, so a `[hooks]` change needs a window reload. The runtime reads user and plugin
+hooks when the session is created, and **repository** hooks are deliberately deferred: they load only
+after folder trust is confirmed, through a separate call that is skipped while trust is pending. A repo
+hook can therefore be correctly installed, correctly shaped and simply not loaded yet - which is silent
+in the same way as a hook that denies nothing.
+
+The editor can also decline to read hook files at all (`chat.useHooks` false), and no rule inside this
+project can see any of it: `selftest` and `verify` run the engine directly, so they report PASS with the
+gate installed and with the gate absent. Two tests settle it. The first is free and cannot be fooled:
+a live hook returns text on every human turn and the editor puts it into the model's context, so a turn
+it served carries an `OCF state:` line - no line means the hook did not run. The second is the probe
+`.github/ocf/liveness.py`, which reads the wiring, the editor switch, the workspace session store and
+the local chat agent's hook log and answers ALIVE, NOT-INSTALLED, DISABLED, STALE or NO-EVIDENCE, where
+NO-EVIDENCE is what it must say for a runtime-executed hook it has no log for. The standing contract
+requires the model to run both before its first answer in a session; ALIVE, or a marker on the turn, is
+the only thing that means the gate is in force.
+
+The master switch is `[system] enabled`, and it controls enforcement rather than the program. With it
+off, `PreToolUse` and `Stop` answer nothing at all: no `allow`, because a hook that answers `allow`
+suppresses the editor's own approval prompt and would leave the human less protected than with no gate
+installed, and no `deny`, because nothing is enforced. Everything that only reports keeps running - the
+startup component report, the intake and its journal entry, and the soft rules a human deliberately
+left on, because `plan-template`, `report-template` and `quality-self-evaluation` say `enabled = true`
+and the switch does not reach them, so dropping them there would switch off a rule nobody switched off.
+A turn served while the switch is off carries `OCF: the master switch is off`, which is what makes a
+disarmed gate distinguishable from a dead one. The switch is read before the event table is consulted
+for anything but the event's kind, because a dictionary lookup cannot fail - an earlier revision read
+the table first, and a fault there denied every call, including the control-plane calls that would have
+recorded what had happened.
+
+Ten events can be installed from a file, and they answer in five different shapes. `PreToolUse` carries
+`permissionDecision`; `Stop` and `SubagentStop` carry `decision`; `SessionStart`, `SubagentStart` and
+`UserPromptSubmit` take a string; `PostToolUse` alone takes a list; and `PreCompact`, `SessionEnd` and
+`ErrorOccurred` answer nothing at all and are recorded in the journal instead, because they have no
+consumer on the other side. A host may spell an event name either way (`PreToolUse`, `preToolUse`, or
+`pre_tool_use`), so the engine normalises the name rather than comparing it - matching the exact string
+was how a hook came to be installed, wired and answering nothing. The events that exist only as SDK
+callbacks - `postToolUseFailure`, `permissionRequest`, `notification`, `postResult` - cannot be
+installed from a file at all, so naming one here would install a hook that is never invoked.
+
 ## 10. Known limitations
 
 - Failure detection is self-reported: the hook fires after a tool succeeded, so `ocf.py fail` has to
@@ -369,6 +451,13 @@ while the level is still autopilot, because the triggering condition is an OR.
 - facts is plain text and guards against slips, not a malicious actor.
 - The write-path scan is a write-keyword heuristic, backstopped by the approval gate while
   `system.enabled` is true.
+- A command that rewrites files without naming them is not seen as a write at all, so the protected
+  list cannot judge it and the approval gate is the only thing left - and while acting, that gate is
+  open. `git` is where this bites: `git apply`, `git checkout`, `git stash pop`, `git merge` and
+  `git restore <path>` all rewrite the working tree, and only `git reset --hard` is caught, by the
+  destructive rule rather than by the write scan. Naming the path does not help - `git restore
+src/secret.md` names it and still is not read as a write. Until the write scan learns these
+  subcommands, run them yourself.
 - Approval is enforced on the text layer, not by process identity, so base64-encoding the call or
   reusing a file that already contains it can still get through. A TTY check does not help, because the
   agent's terminal is a real terminal too.

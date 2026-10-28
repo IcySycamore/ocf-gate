@@ -40,13 +40,39 @@ def load_cases():
         return json.load(handle)
 
 
+def set_section_enabled(text, section, value):
+    """Set the `enabled` line inside one TOML section, leaving every other section alone.
+
+    A regex with `count=1` was enough while `[system]` was the only section with an `enabled` key. It
+    stopped being enough the moment `[hooks]` had one too, and the failure was not a near miss: the
+    case table copied the live policy, the live policy had the installation switched off, and all 59
+    cases went silently green-to-none at once. A test that reads its own installation state reports on
+    the installation rather than on the rules.
+    """
+    lines = text.splitlines()
+    try:
+        start = lines.index("[%s]" % section)
+    except ValueError:
+        return text
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("[") and not lines[index].startswith("[["):
+            break
+        if re.match(r"^enabled\s*=", lines[index]):
+            lines[index] = "enabled = %s" % value
+            break
+    return "\n".join(lines) + "\n"
+
+
 def policy_text(case):
     if case.get("policy") == "broken":
         return "this is not = valid toml [[[\n"
     with open(POLICY, "r", encoding="utf-8") as handle:
         text = handle.read()
     wanted = "true" if case.get("enabled", True) else "false"
-    return re.sub(r"(?m)^enabled\s*=\s*(true|false)", "enabled = " + wanted, text, count=1)
+    text = re.sub(r"(?m)^enabled\s*=\s*(true|false)", "enabled = " + wanted, text, count=1)
+    # The case table exercises the rules, so the event under test has to be installed or the case
+    # means nothing. That is the harness's business, never the live policy's.
+    return set_section_enabled(text, "hooks", "true" if case.get("hooks_enabled", True) else "false")
 
 
 def build_root(case):
@@ -86,12 +112,16 @@ def parse_output(text):
         return None, "", "", ""
     payload = json.loads(last)
     spec = payload.get("hookSpecificOutput") or {}
-    reason = spec.get("permissionDecisionReason") or ""
+    # Two answer shapes, one reader: the gate answers in `permissionDecision` and the stop-blockers in
+    # `decision`. Reading only the first would have made every Stop answer look like silence, which is
+    # the same reading the host does - so the test would have agreed with a hook the host ignores.
+    reason = spec.get("permissionDecisionReason") or spec.get("reason") or ""
     match = re.match(r"\[([^\]]+)\]", reason)
     context = spec.get("additionalContext") or ""
     if isinstance(context, list):
         context = "\n".join(str(item) for item in context)
-    return spec.get("permissionDecision"), (match.group(1) if match else ""), reason, context
+    return (spec.get("permissionDecision") or spec.get("decision"),
+            (match.group(1) if match else ""), reason, context)
 
 
 def run_case(case):
@@ -191,7 +221,11 @@ def read_frontmatter(path):
     return fields
 
 
-FRONTMATTER_REQUIRED = {"agent": ("name", "description"), "prompt": ("description",)}
+FRONTMATTER_REQUIRED = {
+    "agent": ("name", "description"),
+    "prompt": ("description",),
+    "skill": ("name", "description"),
+}
 
 
 def frontmatter_problems(path, kind):
@@ -277,21 +311,48 @@ def check_agent_cross_references():
             if entry not in inventory:
                 problems.append("%s lists %r in agents:, but no agent declares that name "
                                 "(declared: %s)" % (filename, entry, known))
-    prompts = os.path.join(REPO, ".github", "prompts")
-    for name in sorted(os.listdir(prompts)):
-        if not name.endswith(".prompt.md"):
+    skills = os.path.join(REPO, ".github", "skills")
+    for directory, subdirs, files in os.walk(skills):
+        subdirs.sort()
+        if "SKILL.md" not in files:
             continue
-        problems.extend(frontmatter_problems(os.path.join(prompts, name), "prompt"))
-        fields = read_frontmatter(os.path.join(prompts, name)) or {}
-        target = (fields.get("agent") or "").strip().strip('"').strip("'")
-        if target and target not in inventory:
-            problems.append("prompts/%s binds to agent %r, which no agent declares (declared: %s)"
-                            % (name, target, known))
+        path = os.path.join(directory, "SKILL.md")
+        problems.extend(frontmatter_problems(path, "skill"))
+        fields = read_frontmatter(path) or {}
+        skill_name = (fields.get("name") or "").strip().strip('"').strip("'")
+        parent = os.path.basename(directory)
+        if skill_name and skill_name != parent:
+            problems.append("%s names skill %r but its directory is %r"
+                            % (os.path.relpath(path, REPO), skill_name, parent))
+        if fields.get("user-invocable", "").strip().lower() != "true":
+            problems.append("%s must be manually invocable as a slash skill" %
+                            os.path.relpath(path, REPO))
+        manual_only = skill_name != "quality-self-evaluation"
+        model_invocation = fields.get("disable-model-invocation", "").strip().lower()
+        if manual_only and model_invocation != "true":
+            problems.append("%s must remain manually invoked" % os.path.relpath(path, REPO))
+        if not manual_only and model_invocation != "false":
+            problems.append("quality-self-evaluation must be eligible for automatic loading")
     assert not problems, "; ".join(problems)
 
 
 def test_agent_cross_references():
     check_agent_cross_references()
+
+
+def check_skills_are_packaged():
+    """A skill that installs without its instructions is a slash command with nothing to run."""
+    ocf = load_ocf_module()
+    shipped = set(ocf.install_files(REPO))
+    expected = (
+        ".github/skills/work-intake/SKILL.md",
+        ".github/skills/work-plan/SKILL.md",
+        ".github/skills/bug-route/SKILL.md",
+        ".github/skills/quality-self-evaluation/SKILL.md",
+        ".github/skills/quality-self-evaluation/scripts/score.py",
+    )
+    missing = [path for path in expected if path not in shipped]
+    assert not missing, "the release install list omits skill files: %s" % ", ".join(missing)
 
 
 def iter_markdown_files():
@@ -340,11 +401,11 @@ MUST_STAY_PROTECTED = (
     ".github/hooks/orchestrator.json",
     ".github/agents/orchestrator.agent.md",
     ".github/agents/plan-auditor.agent.md",
-    ".github/prompts/work-plan.prompt.md",
-    # The two templates. They were covered by neither mechanism before: the self-protection regex
-    # listed hooks/ocf/agents/prompts and stopped at the directory above these, and the list did not
-    # mention them either. A template the machine can rewrite is a shape imposed on it, not on the
-    # plan.
+    ".github/skills/work-intake/SKILL.md",
+    ".github/skills/work-plan/SKILL.md",
+    ".github/skills/bug-route/SKILL.md",
+    ".github/skills/quality-self-evaluation/SKILL.md",
+    ".github/skills/quality-self-evaluation/scripts/score.py",
     ".github/assets/plan-template.md",
     ".github/assets/report-template.md",
     # The list guards itself: without this entry the machine could empty it, and an empty list
@@ -481,6 +542,11 @@ def check_policy_vocabulary():
             text = handle.read()
         text += ("\n[[rule]]\nid = \"probe-unknown\"\non = \"not_a_class\"\nsurface = \"command\"\n"
                  "match = \".*\"\naction = \"deny\"\n")
+        # This check drives the real entry point, so the event has to be installed and the master switch
+        # has to be on - otherwise the hook answers nothing at all and the check reports on the live
+        # policy's switches instead of on the notification path it exists to test. Two switches, two
+        # sections, and a `count=1` substitution would have patched the wrong one.
+        text = set_section_enabled(set_section_enabled(text, "hooks", "true"), "system", "true")
         with open(os.path.join(root, ".github", "ocf", "policy.toml"), "w", encoding="utf-8") as handle:
             handle.write(text)
         env = dict(os.environ)
@@ -625,8 +691,8 @@ def check_generated_vocabulary():
             "the documentation of %s and the engine disagree: documented but unread %s; read but "
             "undocumented %s"
             % (label, sorted(documented - set(values)), sorted(set(values) - documented)))
-    check_generated_region(ocf, policy, ocf.generated(ocf.POLICY_REL),
-                           "the vocabulary region is what documents the policy's interface")
+    check_generated_region(ocf, policy, ocf.generated(ocf.GUIDE_REL),
+                           "the vocabulary section is what documents the policy's interface")
 
 
 def check_generated_reference():
@@ -692,7 +758,7 @@ def check_hooks_wiring():
 
         everything = json.loads(ocf.render_hooks_json(switches()))
         assert sorted(everything["hooks"]) == sorted(
-            event for _, event, _ in ocf.HOOK_EVENTS), (
+            event for event in (entry.event for entry in ocf.HOOK_EVENTS)), (
             "with everything switched on, the wiring should hold every event: %s"
             % sorted(everything["hooks"]))
         # The command has to carry the subcommand. Without it the program prints its usage and exits
@@ -927,6 +993,7 @@ CHECKS = (
     ("generated-reference", test_generated_reference),
     ("markdown-links", test_markdown_links),
     ("agent-cross-references", test_agent_cross_references),
+    ("skills-are-packaged", check_skills_are_packaged),
     ("gate-files-protected", test_gate_files_protected),
 )
 

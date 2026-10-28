@@ -9,11 +9,10 @@ docs/**
 .github/hooks
 .github/ocf
 .github/agents
-.github/prompts
-.github/assets
 .github/work-control-flow.md
 .orchestrator/state
 .orchestrator/facts
 .orchestrator/journal.log
 .orchestrator/exec.log
-
+.github/skills
+.github/skills/**
